@@ -1,0 +1,4 @@
+# Build output (install.ps1 builds into a temporary folder by default)
+*.exe
+*.pdb
+build/

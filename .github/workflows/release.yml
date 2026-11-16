@@ -1,0 +1,48 @@
+name: release
+
+# A tag like v1.0.0 builds MouseFace on GitHub's own Windows machine, from that tag's source, and
+# publishes MouseFace-Setup.exe with its SHA-256 and a build attestation (proof it came from here).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write      # create the release
+  id-token: write      # sign the attestation
+  attestations: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      # Pinned to commits, not movable tags, so a hijacked tag can't change what runs here.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Build with the .NET Framework compiler and run the unit tests
+        shell: powershell
+        run: .\install.ps1 -Test -UnitOnly -BuildDir "$env:RUNNER_TEMP\build"
+
+      - name: Check the tag matches the version, and name the download
+        shell: powershell
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $exe = "$env:RUNNER_TEMP\build\MouseFace.exe"
+          $stamped = (Get-Item $exe).VersionInfo.ProductVersion
+          if ($stamped -ne $version) { throw "The tag says $version but the program says $stamped (App.Version)." }
+          New-Item -ItemType Directory -Path dist | Out-Null
+          Copy-Item $exe dist\MouseFace-Setup.exe
+          $hash = (Get-FileHash dist\MouseFace-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path dist\SHA256SUMS.txt -Encoding ascii -Value "$hash  MouseFace-Setup.exe"
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/MouseFace-Setup.exe
+
+      - name: Publish the release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $notes = "Download MouseFace-Setup.exe and run it. What changed: see CHANGELOG.md."
+          gh release create $env:GITHUB_REF_NAME dist\MouseFace-Setup.exe dist\SHA256SUMS.txt --title "MouseFace $version" --notes $notes
