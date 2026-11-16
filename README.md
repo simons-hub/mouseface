@@ -1,6 +1,6 @@
-<img src="assets/logo.png" alt="MouseFace logo: an orange cartoon mouse" width="128" align="right">
-
 # MouseFace
+
+<img src="assets/logo.png" alt="MouseFace logo: an orange cartoon mouse" width="128" align="right">
 
 Remap your Evoluent mouse's buttons and dim your screens on Windows 10 and 11, without Evoluent's drivers.
 
