@@ -119,6 +119,10 @@ namespace MouseFace
         [DllImport("kernel32.dll")] internal static extern uint GetFileType(IntPtr handle);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         internal static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+        // Without MOVEFILE_COPY_ALLOWED it only moves within a drive and never falls back to a copy,
+        // which would leave a running program's file where it was.
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern bool MoveFileEx(string from, string to, uint flags);
+        internal const uint MOVEFILE_REPLACE_EXISTING = 0x1;
         [DllImport("advapi32.dll", SetLastError = true)] internal static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
         [DllImport("advapi32.dll", SetLastError = true)] internal static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr info, int length, out int needed);
         [DllImport("advapi32.dll")] internal static extern IntPtr GetSidSubAuthority(IntPtr sid, uint index);

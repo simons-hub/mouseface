@@ -33,6 +33,7 @@ namespace MouseFace.Tests
                 else if (mode == "--live") code = LiveTest.Run();
                 else if (mode == "--select-at" && args.Length > 1) code = SelectAt(args[1]);
                 else if (mode == "--ui-shots" && args.Length > 1) code = UiShots(args[1]);
+                else if (mode == "--wait") { Thread.Sleep(30000); code = 0; } // a running program for the system checks to move
                 else { Console.WriteLine("usage: " + App.Name + ".Tests --unit | --system | --live | --select-at X,Y"); return 2; }
             }
             finally
@@ -121,7 +122,7 @@ namespace MouseFace.Tests
             string result = null;
             Thread t = new Thread(delegate()
             {
-                try { result = new WholeNameSelector().SelectAt(x, y); }
+                try { result = new WholeNameSelector().SelectAt(x, y, null); }
                 catch (Exception ex) { result = "skipped, " + ex.GetType().Name + ": " + ex.Message; }
             });
             t.IsBackground = true;
@@ -280,12 +281,128 @@ namespace MouseFace.Tests
             r.ReleaseAll(released);
             Same("letting go of everything ends a click lock", "Left-", Out.Describe(released));
 
-            Same("Keys Ctrl+Shift+T: press holds the keys down in order", "swallow Ctrl+ Shift+ T+", D(r, Btn.Forward, true));
-            Same("  ...release lets them go in reverse", "swallow T- Shift- Ctrl-", D(r, Btn.Forward, false));
+            Same("Keys Ctrl+Shift+T: a shortcut is pressed and let go at once, in order", "swallow Ctrl+ Shift+ T+ T- Shift- Ctrl-", D(r, Btn.Forward, true));
+            Same("  ...so nothing is left to let go when the finger lifts", "swallow", D(r, Btn.Forward, false));
             Same("Keys Win: a modifier alone is held while the button is", "swallow Win+", D(r, Btn.Middle, true));
             released.Clear();
             r.ReleaseAll(released);
             Same("letting go of everything lets held keys go", "Win-", Out.Describe(released));
+            D(r, Btn.Middle, false);
+            Check("held: Ctrl, Shift, Alt and Win on their own, and a single key (push-to-talk)", Parse("[Buttons]\nBack = Keys Ctrl+Shift\n").For(Btn.Back).Hold
+                && Parse("[Buttons]\nBack = Keys F13\n").For(Btn.Back).Hold && Parse("[Buttons]\nBack = Keys Space\n").For(Btn.Back).Hold);
+            Check("pressed and let go at once: a modifier with another key", !Parse("[Buttons]\nBack = Keys Alt+F4\n").For(Btn.Back).Hold
+                && !Parse("[Buttons]\nBack = Keys Win+L\n").For(Btn.Back).Hold);
+
+            // Something else lets the locked left button go: the next Click lock press locks again.
+            D(r, Btn.Back, true); D(r, Btn.Back, false);
+            r.LockLost();
+            Same("a lock something else ended: the next press locks again", "swallow Left+", D(r, Btn.Back, true));
+            D(r, Btn.Back, false);
+            D(r, Btn.Back, true); D(r, Btn.Back, false);
+            UnheardReleases();
+        }
+
+        // Windows keeps a press or release from the hook while an admin window has it, but Raw Input still
+        // reports it. A release is only owed once a later report has come and the hook still hasn't heard
+        // it: one report can hold several changes, which the hook hears one by one after it.
+        static void UnheardReleases()
+        {
+            Remapper r = new Remapper();
+            r.Config = Parse("[Buttons]\nMiddle = Right\nRight = Double\nBack = Keys Ctrl\nForward = Keys Alt+F4\n");
+            List<Out> sent = new List<Out>();
+            D(r, Btn.Middle, true);
+            r.RawUp(Btn.Middle); // the finger lifted over an admin window; the hook heard nothing
+            r.Settle(sent, false);
+            Same("a release in the latest report is not owed yet (the hook may still hear it)", "", Out.Describe(sent));
+            r.NextReport();      // the mouse moved on
+            r.Settle(sent, false);
+            Same("a release the hook never heard: the held Right is let go at the next event heard", "Right-", Out.Describe(sent));
+            Same("  ...and the button starts afresh", "swallow Right+", D(r, Btn.Middle, true));
+            r.RawUp(Btn.Middle);
+            Same("a release Raw Input reports just before the hook hears it is let go once, by the hook", "swallow Right-", D(r, Btn.Middle, false));
+            r.NextReport();
+            sent.Clear(); r.Settle(sent, false);
+            Same("  ...with nothing left over", "", Out.Describe(sent));
+
+            // One report: the bottom finger lets go as the middle one presses (rolling between buttons).
+            D(r, Btn.Right, true);
+            r.RawUp(Btn.Right);
+            string other = D(r, Btn.Middle, true);  // the hook hears the press first...
+            sent.Clear(); r.Settle(sent, false);
+            Check("two changes in one report: the other button's press doesn't let go of this one early", other == "swallow Right+" && sent.Count == 0);
+            Same("  ...its own release, heard next, lets go of the double click's Left and is swallowed", "swallow Left-", D(r, Btn.Right, false));
+            D(r, Btn.Middle, false);
+
+            D(r, Btn.Right, true);
+            r.RawUp(Btn.Right);   // released unheard...
+            r.NextReport();
+            r.RawDown(Btn.Right); // ...and pressed again unheard
+            Same("a press after an unheard release: the old double click's Left goes first, and the new release passes",
+                "pass Left-", D(r, Btn.Right, false));
+
+            D(r, Btn.Back, true);
+            r.Defer(Btn.Back); // its release came while an admin window was in front
+            sent.Clear(); r.Settle(sent, true);
+            Same("held Ctrl waits while an admin window is in front, where Windows would drop its release", "", Out.Describe(sent));
+            r.Settle(sent, false);
+            Same("  ...and goes once it has gone", "Ctrl-", Out.Describe(sent));
+
+            D(r, Btn.Back, true);
+            r.RawUp(Btn.Back); r.NextReport(); // let go over an admin window...
+            r.RawDown(Btn.Back);                // ...and pressed again over it
+            sent.Clear(); r.Settle(sent, true);
+            Same("held Ctrl from a press that ended unheard still waits while the admin window is in front", "", Out.Describe(sent));
+            r.KeysBlocked = true;
+            Same("  ...the second press's release, heard, passes (its press went to the admin window)", "pass", D(r, Btn.Back, false));
+            r.Settle(sent, false);
+            Same("  ...and Ctrl goes once the admin window has", "Ctrl-", Out.Describe(sent));
+
+            // Keys go to the window in front, so they needn't wait for the hook to hear the mouse again.
+            r.KeysBlocked = false;
+            D(r, Btn.Back, true);
+            r.RawUp(Btn.Back); // let go over an admin window, with an ordinary window in front
+            Check("a held key's release seen only by Raw Input keeps the window watch on", r.OwesKeys);
+            sent.Clear(); r.SettleKeys(sent, false, false);
+            Same("  ...but in the latest report it waits (the hook may yet hear it)", "", Out.Describe(sent));
+            r.NextReport();
+            r.SettleKeys(sent, false, false);
+            Same("  ...and once owed, Ctrl goes at once, from Raw Input alone", "Ctrl-", Out.Describe(sent));
+            D(r, Btn.Back, true);
+            r.RawUp(Btn.Back);
+            sent.Clear(); r.SettleKeys(sent, false, true); // another window came to the front
+            Same("a window coming to the front lets a held key go early", "Ctrl-", Out.Describe(sent));
+            Same("  ...and its release, if the hook still hears it, is swallowed", "swallow", D(r, Btn.Back, false));
+
+            D(r, Btn.Back, true);
+            r.KeysBlocked = true; // an admin window is in front
+            Same("another device presses the same button: held Ctrl is owed, not sent where it would be dropped", "pass", D(r, Btn.Back, true, false));
+            sent.Clear(); r.SettleKeys(sent, false, false);
+            Same("  ...and goes once nothing blocks it", "Ctrl-", Out.Describe(sent));
+            D(r, Btn.Back, false, false);
+            D(r, Btn.Back, true);
+            r.KeysBlocked = true;
+            sent.Clear(); r.ReleaseAll(sent); // paused, or the mouse unplugged, with an admin window in front
+            Same("letting go of everything with an admin window in front owes held Ctrl", "", Out.Describe(sent));
+            r.SettleKeys(sent, false, false);
+            Same("  ...until it has gone", "Ctrl-", Out.Describe(sent));
+            D(r, Btn.Back, false);
+            D(r, Btn.Back, true);
+            r.KeysBlocked = false; // on the way out
+            sent.Clear(); r.ReleaseAll(sent);
+            Same("on the way out held keys go whatever is in front", "Ctrl-", Out.Describe(sent));
+            D(r, Btn.Back, false);
+
+            D(r, Btn.Forward, true);
+            r.RawUp(Btn.Forward); r.NextReport(); // a shortcut already let go; its finger lifted unheard
+            sent.Clear(); r.Settle(sent, false);
+            Check("an unheard release after a shortcut sends nothing more", sent.Count == 0);
+            Same("  ...and the next unheard press's release passes through (it was never swallowed)", "pass", D(r, Btn.Forward, false));
+
+            D(r, Btn.Middle, true);
+            r.RawUp(Btn.Middle); r.NextReport();
+            sent.Clear(); r.ReleaseAll(sent);
+            Same("letting go of everything after an unheard release", "Right-", Out.Describe(sent));
+            Same("  ...leaves no swallowed release behind", "pass", D(r, Btn.Middle, false));
 
             Act a; string err;
             Check("parse: Keys Ctrl+C", Act.TryParse("Keys ctrl+c", out a, out err) && a.Text == "Keys Ctrl+C");
@@ -360,6 +477,34 @@ namespace MouseFace.Tests
             Same("a key that only starts like another is left alone",
                 "[Buttons]\r\nLeftover = x\r\nLeft = None",
                 SettingsFile.WithValue("[Buttons]\r\nLeftover = x", "Buttons", "Left", "None"));
+            Same("a file with LF line endings keeps them", "[Buttons]\nMiddle = Double\nBack = None\n",
+                SettingsFile.WithValue("[Buttons]\nMiddle = Right\nBack = None\n", "Buttons", "Middle", "Double"));
+            Same("a key in a second block of its section is changed where it is, as the parser reads it",
+                "[Buttons]\r\nLeft = Left\r\n[Dimming]\r\nKey = Off\r\n[Buttons]\r\nMiddle = Double",
+                SettingsFile.WithValue("[Buttons]\r\nLeft = Left\r\n[Dimming]\r\nKey = Off\r\n[Buttons]\r\nMiddle = Right", "Buttons", "Middle", "Double"));
+            Same("a missing setting goes after the section's last setting, not after a note for the next section",
+                "[Dimming]\r\nKey = Off\r\nStep = 5\r\n; double clicks\r\n[Double]",
+                SettingsFile.WithValue("[Dimming]\r\nKey = Off\r\n; double clicks\r\n[Double]", "Dimming", "Step", "5"));
+            MatchRule listed;
+            Check("Any in a list says it goes alone", !MatchRule.TryParse("Any, Evoluent", out listed, out error) && error.Contains("alone"));
+
+            // An editor that saves in the ANSI code page: a save from the window keeps its accented notes
+            // byte for byte, and leaves no temporary file behind.
+            string note = "; café – mine\r\n[Buttons]\r\nMiddle = ";
+            File.WriteAllBytes(SettingsFile.FilePath, Encoding.Default.GetBytes(note + "Right\r\n"));
+            SettingsFile.Save(SettingsFile.WithValue(SettingsFile.Read(), "Buttons", "Middle", "Double"));
+            Check("an ANSI settings.ini keeps its accented notes through a save",
+                Convert.ToBase64String(File.ReadAllBytes(SettingsFile.FilePath)) == Convert.ToBase64String(Encoding.Default.GetBytes(note + "Double\r\n")));
+            Check("  ...and no settings.ini.tmp is left", !File.Exists(SettingsFile.FilePath + ".tmp"));
+            byte[] bom = new UTF8Encoding(true).GetPreamble(), body = Encoding.ASCII.GetBytes("[Buttons]\r\nMiddle = Right\r\n");
+            byte[] marked = new byte[bom.Length + body.Length];
+            bom.CopyTo(marked, 0);
+            body.CopyTo(marked, bom.Length);
+            File.WriteAllBytes(SettingsFile.FilePath, marked);
+            SettingsFile.Save(SettingsFile.WithValue(SettingsFile.Read(), "Buttons", "Middle", "Double"));
+            byte[] saved = File.ReadAllBytes(SettingsFile.FilePath);
+            Check("a UTF-8 file with its mark keeps the mark, once", saved.Length > 6 && saved[0] == bom[0] && saved[1] == bom[1] && saved[2] == bom[2] && saved[3] == (byte)'[');
+            File.Delete(SettingsFile.FilePath);
 
             // Setup's file steps, in a folder of the test's own.
             string home = Path.Combine(Path.GetTempPath(), App.Name + "-setup-test-" + Process.GetCurrentProcess().Id);
@@ -368,11 +513,27 @@ namespace MouseFace.Tests
             {
                 Installer.Place(Assembly.GetExecutingAssembly().Location, dir, startup, menu);
                 Check("setup copies the program into its folder", File.Exists(Path.Combine(dir, App.Name + ".exe")));
+                Check("  ...through a new file renamed over the old, which is not left behind", !File.Exists(Path.Combine(dir, App.Name + ".exe.new")));
                 Check("setup makes the sign-in and Start menu shortcuts", File.Exists(startup) && File.Exists(menu));
                 File.WriteAllText(Path.Combine(dir, "settings.ini"), "[Mouse]");
-                Installer.Remove(dir, startup, menu);
-                Check("uninstall removes the program and both shortcuts", !File.Exists(Path.Combine(dir, App.Name + ".exe")) && !File.Exists(startup) && !File.Exists(menu));
+                File.SetAttributes(menu, FileAttributes.ReadOnly);
+                string left = Installer.Remove(Assembly.GetExecutingAssembly().Location, dir, startup, menu, null);
+                Check("uninstall removes the program and both shortcuts, a read-only one too", left == null
+                    && !File.Exists(Path.Combine(dir, App.Name + ".exe")) && !File.Exists(startup) && !File.Exists(menu));
                 Check("uninstall keeps settings.ini", File.Exists(Path.Combine(dir, "settings.ini")));
+
+                // Installed apps runs the installed copy itself to uninstall it, and a running program's
+                // file can't be deleted, so it is moved out of the way (the system checks try it running).
+                string own = Path.Combine(dir, App.Name + ".exe");
+                File.WriteAllText(own, "a stand-in for the installed program");
+                File.WriteAllText(startup, "a stand-in shortcut");
+                Installer.Remove(own, dir, startup);
+                string aside = Path.Combine(Path.GetTempPath(), App.Name + "-" + Process.GetCurrentProcess().Id + Installer.Aside);
+                Check("uninstall run from the installed copy moves its file to the temp folder", !File.Exists(own) && File.Exists(aside) && !File.Exists(startup));
+                File.Delete(aside);
+                File.WriteAllText(own + Installer.Aside, "renamed where it was, when the temp folder is on another drive");
+                Installer.Place(Assembly.GetExecutingAssembly().Location, dir);
+                Check("the next install deletes a program an uninstall renamed where it was", !File.Exists(own + Installer.Aside));
 
                 // A download carries Windows' "came from the internet" mark; the installed copy must not.
                 string download = Path.Combine(home, "MouseFace-Setup.exe"), installed = Path.Combine(dir, App.Name + ".exe");
@@ -390,8 +551,25 @@ namespace MouseFace.Tests
             finally { try { Directory.Delete(home, true); } catch (Exception) { } }
             Check("a copy outside the install folder is setup", Installer.IsSetup(Path.Combine(home, App.Name + ".exe")));
             Check("the installed copy is not setup", !Installer.IsSetup(Installer.Exe.ToUpperInvariant()));
-            Check("the installed copy refuses to uninstall itself", Installer.SelfUninstallProblem(Installer.Exe) != null);
-            Check("setup may uninstall", Installer.SelfUninstallProblem(Path.Combine(home, "MouseFace-Setup.exe")) == null);
+            // The entry in Settings > Apps > Installed apps (built here, never written by the tests).
+            Dictionary<string, object> entry = Installer.UninstallEntry(@"C:\Users\x\AppData\Local\MouseFace\MouseFace.exe",
+                @"C:\Users\x\AppData\Local\MouseFace", 150000, new DateTime(2026, 11, 15));
+            Check("Installed apps lists it as MouseFace, by ZebraTree Media, with its version",
+                (string)entry["DisplayName"] == "MouseFace" && (string)entry["Publisher"] == "ZebraTree Media" && (string)entry["DisplayVersion"] == App.Version);
+            System.Globalization.CultureInfo was = Thread.CurrentThread.CurrentCulture;
+            try
+            {
+                Thread.CurrentThread.CurrentCulture = new System.Globalization.CultureInfo("th-TH"); // the Thai Buddhist calendar: year 2569
+                Same("the install date is the usual one on a PC set to another calendar", "20261115",
+                    (string)Installer.UninstallEntry("x", "y", 1, new DateTime(2026, 11, 15))["InstallDate"]);
+            }
+            finally { Thread.CurrentThread.CurrentCulture = was; }
+            Same("Uninstall in Installed apps asks first", "\"C:\\Users\\x\\AppData\\Local\\MouseFace\\MouseFace.exe\" --remove", (string)entry["UninstallString"]);
+            Check("tools like winget uninstall without asking", ((string)entry["QuietUninstallString"]).EndsWith("\" --uninstall"));
+            Check("it can't be modified or repaired, and gives its size and install date",
+                (int)entry["NoModify"] == 1 && (int)entry["NoRepair"] == 1 && (int)entry["EstimatedSize"] == 146 && (string)entry["InstallDate"] == "20261115");
+            Check("the entry is under the current user's own key, so it needs no admin rights",
+                Installer.UninstallKey == @"Software\Microsoft\Windows\CurrentVersion\Uninstall\MouseFace");
 
             // Versions: setup never replaces a newer installed version.
             Check("1.1.0 is newer than 1.0.0", Installer.Newer("1.1.0", "1.0.0"));
@@ -468,7 +646,8 @@ namespace MouseFace.Tests
             Check("a chosen vendor:product matches it all the same", MatchRule.TryParse("1A7C:0191", out one, out err) && one.Matches(Ids(sig)));
             Check("1A7C:0191 parses", MatchRule.TryParse("1a7c:0191", out one, out err) && one.Text == "1A7C:0191");
             Check("1A7C:0191 matches that model only", one.Matches(Ids(usb)) && !one.Matches(Ids(@"\\?\HID#VID_1A7C&PID_0195#x")));
-            Check("Any matches every device, even one with no IDs", MatchRule.TryParse("any", out any, out err) && any.Matches(Ids(touchpad)) && any.Matches(Ids(receiver)));
+            Check("Any matches every mouse with an ID", MatchRule.TryParse("any", out any, out err) && any.Matches(Ids(receiver)) && any.Matches(Ids(usb)) && any.Matches(Ids(classic)));
+            Check("  ...but not a touchpad or remote desktop's mouse, which have none", !any.Matches(Ids(touchpad)) && !any.Matches(Ids(rdp)));
             Check("a list: Evoluent, 046D", MatchRule.TryParse("Evoluent, 046D", out two, out err) && two.Matches(Ids(receiver)) && two.Matches(Ids(usb)) && two.Text == "Evoluent, 046D");
             Check("rejects a name it does not know", !MatchRule.TryParse("Logitech", out one, out err));
             Check("rejects a short ID", !MatchRule.TryParse("1A7:0191", out one, out err));
@@ -484,25 +663,25 @@ namespace MouseFace.Tests
             Attribution a = new Attribution();
             IntPtr dev;
             a.OnReport(mouse, middleDown, 1000);
-            Check("a click claims the report that came before it", a.Claim(middleDown, false, 1001, out dev) && dev == mouse);
-            Check("  ...only once", !a.Claim(middleDown, false, 1002, out dev));
-            Check("a click with no report of its own (a precision touchpad) finds none", !a.Claim(middleUp, false, 1003, out dev) && dev == IntPtr.Zero);
+            Check("a click claims the report that came before it", a.Claim(middleDown, 1001, out dev) && dev == mouse);
+            Check("  ...only once", !a.Claim(middleDown, 1002, out dev));
+            Check("a click with no report of its own finds none", !a.Claim(middleUp, 1003, out dev) && dev == IntPtr.Zero);
             a.OnReport(IntPtr.Zero, middleDown, 1004);
-            Check("a report with no device (a program, this one's own clicks) is never claimed", !a.Claim(middleDown, false, 1005, out dev));
+            Check("a report with no device (a program, this one's own clicks, a precision touchpad) names none", !a.Claim(middleDown, 1005, out dev));
             a.OnReport(mouse, middleDown, 2000);
-            Check("a report older than " + Attribution.MaxAgeMs + " ms is not claimed", !a.Claim(middleDown, false, 2000 + Attribution.MaxAgeMs + 1, out dev));
-            a.OnReport(mouse, middleDown, 3000);
-            a.OnReport(other, middleDown, 3001);
-            Check("two presses close together are claimed in order (first)", a.Claim(middleDown, false, 3002, out dev) && dev == mouse);
-            Check("two presses close together are claimed in order (second)", a.Claim(middleDown, false, 3003, out dev) && dev == other);
+            Check("a report older than " + Attribution.MaxAgeMs + " ms is not claimed", !a.Claim(middleDown, 2000 + Attribution.MaxAgeMs + 1, out dev));
+            a.OnReport(mouse, middleDown, 3000); // an Evoluent press an admin window kept from the hook
+            a.OnReport(IntPtr.Zero, middleDown, 3010);
+            Check("a precision touchpad's click right after one the hook never heard is not taken for the mouse's", !a.Claim(middleDown, 3011, out dev));
+            a.OnReport(mouse, middleDown, 3100);
+            a.OnReport(other, middleDown, 3110);
+            Check("nor is a second mouse's", a.Claim(middleDown, 3111, out dev) && dev == other);
             a.OnReport(mouse, (ushort)(middleDown | Buttons.RawFlag(Btn.Left, false)), 4000);
-            Check("one report with two buttons serves both", a.Claim(middleDown, false, 4001, out dev) && dev == mouse && a.Claim(Buttons.RawFlag(Btn.Left, false), false, 4001, out dev) && dev == mouse);
+            Check("one report with two buttons serves both", a.Claim(middleDown, 4001, out dev) && dev == mouse && a.Claim(Buttons.RawFlag(Btn.Left, false), 4001, out dev) && dev == mouse);
             a.OnReport(other, Buttons.RawWheel, 5000);
             a.OnReport(mouse, Buttons.RawWheel, 5001);
-            Check("the wheel claims its newest report", a.Claim(Buttons.RawWheel, true, 5002, out dev) && dev == mouse);
-            Check("  ...and clears the rest", !a.Claim(Buttons.RawWheel, true, 5003, out dev));
-            for (int i = 0; i < 9; i++) a.OnReport(i == 0 ? other : mouse, middleDown, 6000 + i);
-            Check("a ninth report waiting drops the oldest", a.Claim(middleDown, false, 6010, out dev) && dev == mouse);
+            Check("the wheel claims its newest report", a.Claim(Buttons.RawWheel, 5002, out dev) && dev == mouse);
+            Check("  ...once", !a.Claim(Buttons.RawWheel, 5003, out dev));
             Check("tick counts that wrap past zero still age correctly", Wraps(a, mouse, middleUp));
         }
 
@@ -510,20 +689,27 @@ namespace MouseFace.Tests
         {
             IntPtr dev;
             a.OnReport(mouse, flag, int.MaxValue - 5);
-            return a.Claim(flag, false, int.MinValue + 5, out dev) && dev == mouse;
+            return a.Claim(flag, int.MinValue + 5, out dev) && dev == mouse;
         }
 
         static void Watchdog()
         {
             HookWatch w = new HookWatch();
-            Check("dead hook: the hook heard something recently, all is well", !w.OnChosenMouseUse(10000, 9990));
-            Check("dead hook: silent over 3 s while the mouse is used, first report: not yet", !w.OnChosenMouseUse(20000, 16000));
-            Check("dead hook: still silent 1 s later: not yet", !w.OnChosenMouseUse(21000, 16000));
-            Check("dead hook: still silent 2 s later: the hook looks dropped", w.OnChosenMouseUse(22000, 16000));
+            Check("dead hook: the hook heard something recently, all is well", !w.OnChosenMouseUse(10000, 9990, 0, 0));
+            Check("dead hook: silent over 3 s while the mouse is used, first report: not yet", !w.OnChosenMouseUse(20000, 16000, 100, 100));
+            Check("dead hook: still silent 1 s later: not yet", !w.OnChosenMouseUse(21000, 16000, 150, 100));
+            Check("dead hook: still silent 2 s later, the pointer moving: the hook looks dropped", w.OnChosenMouseUse(22000, 16000, 200, 100));
             w = new HookWatch();
-            w.OnChosenMouseUse(20000, 16000);
-            w.OnChosenMouseUse(21000, 20900);
-            Check("dead hook: the hook hearing something in between starts the count again", !w.OnChosenMouseUse(22100, 16000) && !w.OnChosenMouseUse(23000, 16000));
+            w.OnChosenMouseUse(20000, 16000, 100, 100);
+            w.OnChosenMouseUse(21000, 20900, 150, 100);
+            Check("dead hook: the hook hearing something in between starts the count again", !w.OnChosenMouseUse(22100, 16000, 200, 100) && !w.OnChosenMouseUse(23000, 16000, 250, 100));
+            w = new HookWatch();
+            w.OnChosenMouseUse(10000, 5000, 100, 100); // one late reading...
+            Check("two late readings far apart, the hook heard between them: not dropped", !w.OnChosenMouseUse(610000, 600000, 300, 300));
+            w = new HookWatch();
+            w.OnChosenMouseUse(20000, 16000, 960, 540);
+            w.OnChosenMouseUse(21000, 16000, 960, 540);
+            Check("silent while the pointer holds still (a tool has taken the mouse to another PC): not dropped", !w.OnChosenMouseUse(23000, 16000, 960, 540));
             RehookBudget b = new RehookBudget();
             bool r1 = b.Allow(1000), r2 = b.Allow(2000), r3 = b.Allow(3000);
             Check("a dropped hook is re-attached up to " + RehookBudget.Limit + " times", r1 && r2 && r3);
@@ -654,8 +840,21 @@ namespace MouseFace.Tests
             Check("reads its own integrity level (" + own.ToString("X") + "; medium is 2000)", own >= 0x1000);
 
             string error;
-            Config c = SettingsFile.Load(out error);
+            bool unreadable;
+            Config c = SettingsFile.Load(true, out error, out unreadable);
             Check("first start writes the default settings.ini, which reads back", c != null && File.Exists(SettingsFile.FilePath) && !c.RemapsAnything);
+
+            // A hand edit made while the Settings window is open.
+            using (SettingsForm f = new SettingsForm(Unit.Parse("[Buttons]\nMiddle = Right\nBack = None\n"), delegate(string text) { return null; }, null))
+            {
+                f.Pick(Btn.Back, "Double click"); // chosen in the window...
+                f.Reload(Unit.Parse("[Buttons]\nMiddle = Double\nBack = Left\n")); // ...while settings.ini is edited by hand
+                Dictionary<string, string> showing = f.Showing();
+                Check("a hand edit shows in the open Settings window", showing["Buttons/Middle"] == "Double");
+                Check("  ...but not over a choice made in the window", showing["Buttons/Back"] == "Double");
+                TestMain.Same("  ...and Save then writes only that choice", "[Buttons]\r\nMiddle = Double\r\nBack = Double",
+                    SettingsForm.WithChanges("[Buttons]\r\nMiddle = Double\r\nBack = Left", f.InFile, showing));
+            }
 
             HookThread h = new HookThread(new Remapper(), new Injector());
             bool up = h.Start();
@@ -669,6 +868,26 @@ namespace MouseFace.Tests
             Check("the hook thread lets go, unhooks and ends when asked", h.Quit(2000) && !h.Hooked);
 
             Check("started without admin rights, so it would run", !Desk.ElevatedByUac());
+
+            // Installed apps runs the installed copy itself to uninstall it: a running program's file
+            // can't be deleted, but it can be moved out of the way. A copy of these tests stands in.
+            string home = Path.Combine(Path.GetTempPath(), App.Name + "-aside-test-" + Process.GetCurrentProcess().Id);
+            string running = Path.Combine(home, "running.exe");
+            Directory.CreateDirectory(home);
+            File.Copy(Assembly.GetExecutingAssembly().Location, running, true);
+            using (Process p = Process.Start(new ProcessStartInfo(running, "--wait") { UseShellExecute = false, CreateNoWindow = true }))
+            {
+                Thread.Sleep(500);
+                try { File.Delete(running); } catch (UnauthorizedAccessException) { }
+                Check("(a running program's file can't be deleted)", File.Exists(running) && !p.HasExited);
+                string aside = null;
+                try { aside = Installer.MoveAside(running); } catch (Exception ex) { Console.WriteLine("      " + ex.Message); }
+                Check("but it can be moved to the temp folder, so uninstalling from Installed apps works", aside != null && !File.Exists(running) && File.Exists(aside));
+                try { p.Kill(); } catch (Exception) { }
+                p.WaitForExit(5000);
+                if (aside != null) try { File.Delete(aside); } catch (Exception) { }
+            }
+            try { Directory.Delete(home, true); } catch (Exception) { }
 
             // A window moved to a screen scaled differently grows or shrinks to match, and back again.
             Config shown = TestMain.SampleConfig();

@@ -176,7 +176,8 @@ namespace MouseFace
         readonly CheckBox popup = new CheckBox();
         readonly Control dimDetails;
         readonly Label error = new Label();
-        readonly Dictionary<string, string> shown; // each setting as the window first showed it
+        readonly Dictionary<string, string> shown; // each setting as settings.ini had it when last shown
+        readonly string[] rowNames = new string[5]; // each row's label, for messages
         int badShortcut = -1;
 
         internal SettingsForm(Config c, Func<string, string> saveText, Action editFile)
@@ -237,7 +238,7 @@ namespace MouseFace
                 rows[i].BackColor = SystemColors.Window;
                 rows[i].Margin = Ui.Pad(0, 0, 0, 4);
                 Label name = new Label();
-                name.Text = layout.Names[i];
+                name.Text = rowNames[i] = layout.Names[i];
                 name.Font = bold;
                 name.TextAlign = ContentAlignment.MiddleLeft;
                 actions[i] = DropDown(160);
@@ -350,8 +351,7 @@ namespace MouseFace
             AutoSize = true;
             AutoSizeMode = AutoSizeMode.GrowAndShrink;
 
-            string unused;
-            shown = Values(out unused) ?? new Dictionary<string, string>();
+            shown = ValuesOf(c);
         }
 
         // Each row's dropdown and shortcut box centred in it again, with the name level with the
@@ -389,6 +389,11 @@ namespace MouseFace
                 AddMouse(n > 1 ? name + " " + n : name, id);
             }
             AddMouse("All mice", "Any");
+            SelectMouse(current);
+        }
+
+        void SelectMouse(string current)
+        {
             int at = mouseValues.FindIndex(delegate(string v) { return v.Equals(current, StringComparison.OrdinalIgnoreCase); });
             if (at < 0) { AddMouse("As set in settings.ini: " + current, current); at = mouseValues.Count - 1; }
             mouse.SelectedIndex = at;
@@ -417,7 +422,8 @@ namespace MouseFace
             popup.Enabled = dim.Checked;
         }
 
-        // Every setting the window shows, as settings.ini spells it, keyed "Section/Key"; or null and why.
+        // Every setting the window shows, as settings.ini spells it, keyed "Section/Key". problem: the
+        // first shortcut box with a mistake (its value is then the text as typed), or null.
         Dictionary<string, string> Values(out string problem)
         {
             problem = null;
@@ -430,21 +436,75 @@ namespace MouseFace
                 if (actions[i].SelectedIndex == ShortcutIndex)
                 {
                     ushort[] keys; string canonical, why;
-                    if (!KeyNames.TryParseChord(shortcuts[i].Text.Trim(), out keys, out canonical, out why))
+                    string typed = shortcuts[i].Text.Trim();
+                    if (KeyNames.TryParseChord(typed, out keys, out canonical, out why)) value = "Keys " + canonical;
+                    else
                     {
-                        problem = (Btn)i + ": " + why + ".";
-                        badShortcut = i;
-                        return null;
+                        value = "Keys " + typed;
+                        if (problem == null)
+                        {
+                            problem = (rowNames[i] ?? ((Btn)i).ToString()) + ": " + (typed.Length == 0 ? "press the keys for its shortcut, like Ctrl+C" : why) + ".";
+                            badShortcut = i;
+                        }
                     }
-                    value = "Keys " + canonical;
                 }
                 v["Buttons/" + (Btn)i] = value;
             }
             v["Double/WholeName"] = wholeName.Checked ? "yes" : "no";
             v["Dimming/Key"] = dim.Checked ? DimKeyNames[dimKey.SelectedIndex] : "Off";
-            v["Dimming/Step"] = ((int)step.Value).ToString();
+            v["Dimming/Step"] = ((int)Math.Round(step.Value, MidpointRounding.AwayFromZero)).ToString(); // as the box shows 2.5: 3
             v["Dimming/Popup"] = popup.Checked ? "yes" : "no";
             return v;
+        }
+
+        // The same, for settings as read from settings.ini.
+        static Dictionary<string, string> ValuesOf(Config c)
+        {
+            Dictionary<string, string> v = new Dictionary<string, string>();
+            v["Mouse/Match"] = c.Match.Text;
+            for (int i = 0; i < 5; i++) v["Buttons/" + (Btn)i] = c.Buttons[i].Text;
+            v["Double/WholeName"] = c.WholeName ? "yes" : "no";
+            v["Dimming/Key"] = Config.DimText(c.Dim);
+            v["Dimming/Step"] = c.DimStep.ToString();
+            v["Dimming/Popup"] = c.Popup ? "yes" : "no";
+            return v;
+        }
+
+        // settings.ini changed while the window is open (edited by hand): each setting not changed here
+        // shows its new value, and Save then compares with the file as it is now, so it writes only what
+        // was changed here and never puts back a value the edit replaced.
+        internal void Reload(Config c)
+        {
+            string unused;
+            Dictionary<string, string> now = Values(out unused), fresh = ValuesOf(c);
+            foreach (KeyValuePair<string, string> f in fresh)
+            {
+                string was, showing;
+                bool untouched = shown.TryGetValue(f.Key, out was) && now.TryGetValue(f.Key, out showing) && showing == was;
+                if (untouched && was != f.Value) Show(f.Key, c);
+                shown[f.Key] = f.Value;
+            }
+        }
+
+        // For the tests: what the window shows, as settings.ini spells it; what it last saw in the file;
+        // and a choice made as the user would.
+        internal Dictionary<string, string> Showing() { string unused; return Values(out unused); }
+        internal Dictionary<string, string> InFile { get { return shown; } }
+        internal void Pick(Btn b, string actionName) { actions[(int)b].SelectedIndex = Array.IndexOf(ActionNames, actionName); }
+
+        void Show(string key, Config c)
+        {
+            Btn b;
+            if (key == "Mouse/Match") SelectMouse(c.Match.Text);
+            else if (key.StartsWith("Buttons/") && Buttons.TryParse(key.Substring("Buttons/".Length), out b)) SetAction((int)b, c.Buttons[(int)b]);
+            else if (key == "Double/WholeName") wholeName.Checked = c.WholeName;
+            else if (key == "Dimming/Key")
+            {
+                dim.Checked = c.Dim != DimKey.Off;
+                if (c.Dim != DimKey.Off) dimKey.SelectedIndex = c.Dim == DimKey.ShiftAlt ? 1 : c.Dim == DimKey.ShiftWin ? 2 : 0;
+            }
+            else if (key == "Dimming/Step") step.Value = Math.Max(1, Math.Min(20, c.DimStep));
+            else if (key == "Dimming/Popup") popup.Checked = c.Popup;
         }
 
         // The file's text with only the settings that changed in the window written over it. Anything
@@ -465,7 +525,7 @@ namespace MouseFace
         {
             string problem;
             Dictionary<string, string> now = Values(out problem);
-            if (now == null)
+            if (problem != null)
             {
                 ShowError(problem);
                 if (badShortcut >= 0) shortcuts[badShortcut].Focus();
@@ -473,20 +533,24 @@ namespace MouseFace
             }
 
             string text;
-            try { text = File.Exists(SettingsFile.FilePath) ? File.ReadAllText(SettingsFile.FilePath) : Config.DefaultText; }
+            bool exists = File.Exists(SettingsFile.FilePath);
+            try { text = exists ? SettingsFile.Read() : Config.DefaultText; }
             catch (Exception ex) { ShowError("Could not read " + SettingsFile.FilePath + ": " + ex.Message); return; }
-            string changed = WithChanges(text, shown, now);
-            if (changed == text && File.Exists(SettingsFile.FilePath)) { Close(); return; } // nothing to save
+            // With the file gone (deleted while the window was open), everything shown is written, not
+            // just the changes, so the defaults don't quietly replace what the window showed.
+            string changed = WithChanges(text, exists ? shown : new Dictionary<string, string>(), now);
+            if (changed == text && exists) { Close(); return; } // nothing to save
 
             problem = save(changed);
             if (problem != null) { ShowError(problem); return; }
             Close();
         }
 
-        void ShowError(string text)
+        // A message under the settings, in red; null hides it.
+        internal void ShowError(string text)
         {
-            error.Text = text;
-            error.Visible = true;
+            error.Text = text ?? "";
+            error.Visible = text != null;
         }
 
         // From the hook thread, as a posted message: light up the row of the button just pressed.

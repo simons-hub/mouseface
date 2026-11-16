@@ -11,15 +11,17 @@ namespace MouseFace
     // never delays the hook or the injector, and its selection stays as it made it.
     internal sealed class WholeNameSelector
     {
-        const int NameReach = 300; // characters read on each side of the selection
-        const int TextPatternId = 10014, Character = 0, RangeStart = 0, RangeEnd = 1; // UI Automation's numbers
+        const int NameReach = 300; // characters read on each side of the selection, at most
+        const int FreshMs = 1000;  // later than this after the double click, the selection is left alone
+        const int TextPatternId = 10014, IsPasswordId = 30019, Character = 0, RangeStart = 0, RangeEnd = 1; // UI Automation's numbers
 
         readonly AutoResetEvent asked = new AutoResetEvent(false);
         readonly int ownPid = Process.GetCurrentProcess().Id;
         long askedAt;               // where the button lifted: x in the high half, y in the low
-        volatile int askedTick;
+        volatile int askedTick, askedSeq;
         volatile bool running;
         int errors;
+        bool password; // the last lookup met a password box (select thread only)
         IUIAutomation uia;
 
         internal int Asks;           // counted for the live test
@@ -42,6 +44,7 @@ namespace MouseFace
             if (!running) return;
             Interlocked.Exchange(ref askedAt, ((long)x << 32) | (uint)y);
             askedTick = Environment.TickCount;
+            askedSeq++; // only the hook thread writes it
             asked.Set();
         }
 
@@ -53,10 +56,13 @@ namespace MouseFace
             {
                 asked.WaitOne();
                 Thread.Sleep(40); // let the program finish its own double-click selection first
-                if (unchecked(Environment.TickCount - askedTick) > 1000) continue; // a program held us up; too late now
+                int seq = askedSeq, tick = askedTick;
+                if (unchecked(Environment.TickCount - tick) > FreshMs) continue; // a program held us up; too late now
                 long at = Interlocked.Read(ref askedAt);
                 string result;
-                try { result = SelectAt((int)(at >> 32), (int)at); }
+                // Still wanted: no newer double click, and not so late that the user has moved on.
+                Func<bool> wanted = delegate { return askedSeq == seq && unchecked(Environment.TickCount - tick) <= FreshMs; };
+                try { result = SelectAt((int)(at >> 32), (int)at, wanted); }
                 catch (Exception ex)
                 {
                     result = "skipped in " + Desk.ForegroundProgram() + ", " + ex.GetType().Name + ": " + ex.Message;
@@ -68,17 +74,20 @@ namespace MouseFace
         }
 
         // Widens the selection under (x, y) to the whole name. Returns what it did, for --watch and tests.
-        internal string SelectAt(int x, int y)
+        // wanted (null in tests) says whether the selection is still wanted, just before it is made.
+        internal string SelectAt(int x, int y, Func<bool> wanted)
         {
             if (uia == null) uia = (IUIAutomation)new CUIAutomation();
             // The program just double-clicked has the keyboard focus, so start there. UI Automation's
             // own point lookup returns only the desktop over some terminals, so it is the fallback.
+            password = false;
             IUIAutomationTextPattern text = TextAbove(uia.GetFocusedElement());
-            if (text == null)
+            if (text == null && !password)
             {
                 UiaPoint pt; pt.x = x; pt.y = y;
                 text = TextAbove(uia.ElementFromPoint(pt));
             }
+            if (password) return "a password box: left as it is";
             if (text == null) return "no text here";
             IUIAutomationTextRangeArray sel = text.GetSelection();
             if (sel == null || sel.Length != 1) return "no single selection";
@@ -87,13 +96,17 @@ namespace MouseFace
             if (inner.Length == 0 || inner.Length >= 4096) return "selection empty or too long";
             if (!Covers(range, x, y)) return "the selection is not under the pointer"; // only the one this click made
 
+            // One short of the cap each side, so a program that moves an end further than asked shows
+            // itself: the text before then fills the cap, and its far end (all GetText can give from the
+            // start) would not be next to the name. Never more than the cap is read.
             IUIAutomationTextRange before = range.Clone();
             before.MoveEndpointByRange(RangeEnd, range, RangeStart);
-            before.MoveEndpointByUnit(RangeStart, Character, -NameReach);
+            before.MoveEndpointByUnit(RangeStart, Character, -(NameReach - 1));
             IUIAutomationTextRange after = range.Clone();
             after.MoveEndpointByRange(RangeStart, range, RangeEnd);
-            after.MoveEndpointByUnit(RangeEnd, Character, NameReach);
-            string left = before.GetText(-1) ?? "", right = after.GetText(-1) ?? "";
+            after.MoveEndpointByUnit(RangeEnd, Character, NameReach - 1);
+            string left = before.GetText(NameReach) ?? "", right = after.GetText(NameReach) ?? "";
+            if (left.Length >= NameReach) return "the program gave more text than asked for; left as it made it";
             int addLeft, addRight;
             Grow(left, inner, right, out addLeft, out addRight);
             if (addLeft == 0 && addRight == 0) return "already whole: " + inner;
@@ -105,22 +118,41 @@ namespace MouseFace
             // Programs count characters their own way (wide glyphs, emoji). Select only on an exact match.
             string got = whole.GetText(want.Length + 1);
             if (got != want) return "read back as '" + got + "', not '" + want + "'; left as the program made it";
+            bool same;
+            try
+            {
+                IUIAutomationTextRangeArray still = text.GetSelection();
+                same = still != null && still.Length == 1 && still.GetElement(0).Compare(range) != 0;
+            }
+            catch (Exception) { same = true; } // a program that can't compare ranges: the time check alone decides
+            if (!same) return "the selection changed; left as it is";
+            // Last thing before selecting, so a slow program can't make it land after the user has
+            // moved on and is typing, which would put the selection back and let the typing replace it.
+            if (wanted != null && !wanted()) return "too late; left as the program made it";
             whole.Select();
             return "selected " + want;
         }
 
-        // The nearest element at or above e that exposes its text, unless it is one of this program's own.
+        // The nearest element at or above e that exposes its text, unless it is one of this program's own
+        // or a password box.
         IUIAutomationTextPattern TextAbove(IUIAutomationElement e)
         {
             IUIAutomationTreeWalker up = uia.RawViewWalker;
             for (int i = 0; e != null && i < 10; i++)
             {
                 if (e.CurrentProcessId == ownPid) return null;
+                if (IsPassword(e)) { password = true; return null; }
                 IUIAutomationTextPattern t = e.GetCurrentPattern(TextPatternId) as IUIAutomationTextPattern;
                 if (t != null) return t;
                 e = up.GetParentElement(e);
             }
             return null;
+        }
+
+        static bool IsPassword(IUIAutomationElement e)
+        {
+            try { object v = e.GetCurrentPropertyValue(IsPasswordId); return v is bool && (bool)v; }
+            catch (Exception) { return false; } // the pattern lookup that follows decides, as before
         }
 
         static bool Covers(IUIAutomationTextRange range, int x, int y)

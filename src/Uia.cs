@@ -29,7 +29,9 @@ namespace MouseFace
     internal interface IUIAutomationElement
     {
         void _SetFocus(); void _GetRuntimeId(); void _FindFirst(); void _FindAll(); void _FindFirstBuildCache();
-        void _FindAllBuildCache(); void _BuildUpdatedCache(); void _GetCurrentPropertyValue(); void _GetCurrentPropertyValueEx();
+        void _FindAllBuildCache(); void _BuildUpdatedCache();
+        [return: MarshalAs(UnmanagedType.Struct)] object GetCurrentPropertyValue(int propertyId);
+        void _GetCurrentPropertyValueEx();
         void _GetCachedPropertyValue(); void _GetCachedPropertyValueEx(); void _GetCurrentPatternAs(); void _GetCachedPatternAs();
         [return: MarshalAs(UnmanagedType.IUnknown)] object GetCurrentPattern(int patternId);
         void _GetCachedPattern(); void _GetCachedParent(); void _GetCachedChildren();
@@ -60,7 +62,8 @@ namespace MouseFace
     internal interface IUIAutomationTextRange
     {
         IUIAutomationTextRange Clone();
-        void _Compare(); void _CompareEndpoints(); void _ExpandToEnclosingUnit(); void _FindAttribute(); void _FindText();
+        int Compare(IUIAutomationTextRange range); // nonzero when both cover the same text
+        void _CompareEndpoints(); void _ExpandToEnclosingUnit(); void _FindAttribute(); void _FindText();
         void _GetAttributeValue();
         [return: MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_R8)] double[] GetBoundingRectangles();
         void _GetEnclosingElement();

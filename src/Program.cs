@@ -33,18 +33,20 @@ namespace MouseFace
         static bool watching, stopping, paused;
         static int crashed;
 
-        const string Usage = "usage: " + App.Name + " [--watch] [--data-dir DIR] [--quit] [--install] [--uninstall] [--version] [--help]\n"
+        const string Usage = "usage: " + App.Name + " [--watch] [--data-dir DIR] [--quit] [--install] [--uninstall] [--remove] [--register] [--version] [--help]\n"
             + "  --watch          also show each button decision in a console window\n"
             + "  --data-dir DIR   keep settings.ini, the log and the brightness in DIR\n"
             + "  --quit           ask the running copy to let go of everything and exit\n"
             + "  --install        install this copy for the current user and start it, without asking\n"
-            + "  --uninstall      remove the installed copy and its shortcuts, keeping the settings\n"
-            + "                   (run it from MouseFace-Setup.exe: the installed copy can't remove itself)\n"
+            + "  --uninstall      remove the program, its shortcuts and its Installed apps entry, keeping the settings\n"
+            + "  --remove         the same, asking first (what Settings > Apps > Installed apps runs)\n"
+            + "  --register       list the installed program in Installed apps (install.ps1 uses it)\n"
             + "Settings: settings.ini in %LOCALAPPDATA%\\" + App.Name + " (tray menu > Settings).";
         internal const string QuitEventName = @"Local\" + App.Name + ".quit";
 
         const string NotAsAdmin = App.Name + " doesn't run with admin rights, so it did not start. "
             + "Start it normally, not with Run as administrator.";
+        static string UninstalledText { get { return App.Name + " is uninstalled. Your settings are still in " + Installer.Dir + "; delete that folder to remove them too."; } }
 
         [STAThread]
         static int Main(string[] args)
@@ -60,9 +62,29 @@ namespace MouseFace
                 {
                     // For scripts: the result goes to the console and the exit code, never to a message box.
                     string problem = elevated ? NotAsAdmin
-                        : args[i] == "--install" ? Installer.Install(Application.ExecutablePath) : Installer.Uninstall(Application.ExecutablePath);
+                        : args[i] == "--install" ? Installer.Install(App.ExePath) : Installer.Uninstall(App.ExePath);
                     Console2.Use();
                     Console.WriteLine(problem ?? (args[i] == "--install" ? App.Name + " " + App.Version + " installed and started." : App.Name + " uninstalled; settings kept in " + Installer.Dir + "."));
+                    return problem == null ? 0 : 1;
+                }
+                else if (args[i] == "--register")
+                {
+                    // install.ps1, after placing the program: list it in Installed apps.
+                    string problem = elevated ? NotAsAdmin : Installer.Register();
+                    Console2.Use();
+                    Console.WriteLine(problem ?? App.Name + " is listed in Settings > Apps > Installed apps.");
+                    return problem == null ? 0 : 1;
+                }
+                else if (args[i] == "--remove")
+                {
+                    // Uninstall in Settings > Apps > Installed apps: ask first, then say how it went.
+                    if (elevated) { Box(NotAsAdmin, true); return 5; }
+                    Application.EnableVisualStyles();
+                    if (MessageBox.Show("Uninstall " + App.Name + "? Your settings are kept.", App.Name,
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return 1;
+                    string problem = Installer.Uninstall(App.ExePath);
+                    MessageBox.Show(problem ?? UninstalledText, App.Name, MessageBoxButtons.OK,
+                        problem == null ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
                     return problem == null ? 0 : 1;
                 }
                 else if (args[i] == "--quit")
@@ -78,11 +100,11 @@ namespace MouseFace
             if (elevated) { Box(NotAsAdmin, true); return 5; }
 
             // Started from anywhere but its install folder (a download, a build folder), it is setup.
-            if (args.Length == 0 && Installer.IsSetup(Application.ExecutablePath))
+            if (args.Length == 0 && Installer.IsSetup(App.ExePath))
             {
                 try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch (Exception) { }
                 Application.EnableVisualStyles();
-                Application.Run(new SetupForm(Application.ExecutablePath));
+                Application.Run(new SetupForm(App.ExePath));
                 return 0;
             }
 
@@ -107,18 +129,26 @@ namespace MouseFace
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch (Exception) { }
             Application.EnableVisualStyles();
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-            Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e) { Stop("error: " + e.Exception, false); };
+            Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
+            {
+                Log.Write("error: " + e.Exception); // the whole of it, for a bug report; the message box gets the gist
+                Stop("an error: " + e.Exception.GetType().Name + ": " + e.Exception.Message, false);
+            };
             AppDomain.CurrentDomain.UnhandledException += delegate(object sender, UnhandledExceptionEventArgs e) { OnCrash(e.ExceptionObject); };
             KeepFast();
 
             string error;
+            bool unreadable;
             bool firstRun = !File.Exists(SettingsFile.FilePath); // then the Settings window opens to set it up
-            Config config = SettingsFile.Load(out error);
+            Config config = SettingsFile.Load(true, out error, out unreadable);
             if (config == null)
             {
-                Log.Write("settings.ini has a mistake, so nothing is remapped until it is fixed: " + error);
-                BoxLater("settings.ini has a mistake, so " + App.Name + " is running with nothing remapped and no dimming until it is fixed.\n\n"
-                    + error + "\n\nTray icon > Settings > Edit settings.ini. Saving the fixed file applies it at once.");
+                lastSettingsError = error;
+                string what = unreadable ? App.Name + " could not read settings.ini" : "settings.ini has a mistake";
+                Log.Write(what + ", so nothing is remapped until it is fixed: " + error);
+                BoxLater(what + ", so " + App.Name + " is running with nothing remapped and no dimming until it is fixed.\n\n" + error
+                    + (unreadable ? "\n\nAnother program may have it open. Saving the file again applies it at once."
+                                  : "\n\nTray icon > Settings > Edit settings.ini. Saving the fixed file applies it at once."));
                 config = new Config();
             }
             remapper.Config = config;
@@ -242,16 +272,19 @@ namespace MouseFace
         {
             if (stopping || !File.Exists(SettingsFile.FilePath)) return;
             string error;
-            Config c = SettingsFile.Load(out error);
+            bool unreadable;
+            Config c = SettingsFile.Load(false, out error, out unreadable);
             if (c == null)
             {
                 if (error == lastSettingsError) return;
                 lastSettingsError = error;
                 Log.Write("settings.ini not applied: " + error);
-                BoxLater("The settings you saved were not applied, and the previous ones are still in use.\n\n" + error);
+                BoxLater((unreadable ? "settings.ini could not be read" : "The settings you saved were not applied") + ", so nothing has changed.\n\n" + error);
+                if (FormOpen(settingsForm)) settingsForm.ShowError(InUseText);
                 return;
             }
             lastSettingsError = null;
+            if (FormOpen(settingsForm)) { settingsForm.Reload(c); settingsForm.ShowError(null); } // the open window shows a hand edit too
             if (c.Summary() == remapper.Config.Summary()) return; // saved without changes
             remapper.Config = c;
             hook.Post(HookThread.WM_APP_RECONFIG); // the chosen mouse may have changed
@@ -267,12 +300,18 @@ namespace MouseFace
             catch (Exception ex) { Box("Could not open " + SettingsFile.FilePath + ": " + ex.Message, true); }
         }
 
+        static bool FormOpen(Form f) { return f != null && !f.IsDisposed; }
+
+        // Shown in the Settings window while settings.ini can't be used.
+        static string InUseText { get { return "settings.ini can't be used, so this shows the settings in use, not the file. " + lastSettingsError; } }
+
         static void ShowSettings()
         {
-            if (settingsForm == null || settingsForm.IsDisposed)
+            if (!FormOpen(settingsForm))
             {
                 settingsForm = new SettingsForm(remapper.Config, SaveSettingsText, EditSettings);
                 settingsForm.FormClosed += delegate { hook.ReportButtons = false; };
+                if (lastSettingsError != null) settingsForm.ShowError(InUseText);
             }
             hook.ReportButtons = true; // so pressing a mouse button lights up its row
             settingsForm.Show();
@@ -383,7 +422,11 @@ namespace MouseFace
                     hook.Failed = true; // from here on the hook lets everything through
                     // The hook thread owns the remapper's state, so it lets go itself, unless it is
                     // the thread that crashed or does not answer.
-                    if (hook.ThreadId == Native.GetCurrentThreadId() || !hook.Quit(300)) remapper.ReleaseAll(outs);
+                    if (hook.ThreadId == Native.GetCurrentThreadId() || !hook.Quit(300))
+                    {
+                        remapper.KeysBlocked = false; // on the way out everything goes, whatever is in front
+                        remapper.ReleaseAll(outs);
+                    }
                 }
                 outs.AddRange(injector.TakeUnsent());
                 if (outs.Count > 0) Injector.Send(outs); // sent from here: the injector may be the thread that died

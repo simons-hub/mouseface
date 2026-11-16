@@ -16,10 +16,15 @@ namespace MouseFace
         internal readonly Btn Button;   // Kind.Button: which button to send
         internal readonly ushort[] Keys; // Kind.Keys: virtual-key codes, pressed in this order
         internal readonly string Text;   // the canonical spelling, for the log and --watch
+        // Kind.Keys: held while the button is: a single key (for push-to-talk and the like), or Ctrl,
+        // Shift, Alt and Win on their own (for Ctrl+click). A shortcut of a modifier and another key is
+        // pressed and let go at once.
+        internal readonly bool Hold;
 
         Act(ActKind kind, Btn button, ushort[] keys, string text)
         {
             Kind = kind; Button = button; Keys = keys; Text = text;
+            Hold = keys != null && (keys.Length == 1 || Array.TrueForAll(keys, KeyNames.IsModifier));
         }
 
         internal static Act Same(Btn b) { return new Act(ActKind.Button, b, null, b.ToString()); }
@@ -131,7 +136,7 @@ namespace MouseFace
             return (ushort)(1 << bit);
         }
 
-        internal const ushort RawWheel = 0x0400, RawHWheel = 0x0800;
+        internal const ushort RawWheel = 0x0400, RawHWheel = 0x0800, RawButtons = 0x03FF;
     }
 
     // Key names for "Keys" actions, like Ctrl+Shift+T.
@@ -185,7 +190,7 @@ namespace MouseFace
         }
 
         // "Ctrl+Shift+T": modifiers in any order, then at most one other key. A chord of modifiers
-        // alone (like "Ctrl") holds them while the button is down.
+        // alone (like "Ctrl") holds them while the button is down; any other is a tap (see Act.Hold).
         internal static bool TryParseChord(string text, out ushort[] keys, out string canonical, out string error)
         {
             keys = null; canonical = null; error = null;

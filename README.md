@@ -22,8 +22,8 @@ First uninstall other mouse software (Evoluent Mouse Manager or X-Mouse Button C
 
 1. Download `MouseFace-Setup.exe` from the [latest release](https://github.com/simons-hub/mouseface/releases/latest).
 2. Double-click it. It isn't code-signed yet, so Windows may say "Windows protected your PC": choose **More info**, then **Run anyway**.
-3. Choose **Install**. It installs for you only and needs no admin rights. (Don't use **Run as administrator**: MouseFace won't run with admin rights.)
-4. The Settings window opens: choose what each button does, then **Save**.
+3. Choose **Install**. It installs for you only and needs no admin rights. (Don't use **Run as administrator**: with User Account Control on, as Windows has it by default, MouseFace refuses to run that way.)
+4. The first time, the Settings window opens: choose what each button does, then **Save**.
 
 Each release lists the file's SHA-256 and carries GitHub's build attestation, which shows it was built from this repository's source.
 
@@ -44,7 +44,7 @@ MouseFace runs in the background, with its icon in the notification area by the 
 
 **To update,** run the newer `MouseFace-Setup.exe` or `install.cmd`; your settings are kept. Setup never replaces a newer version with an older one: to go back, uninstall first.
 
-**To uninstall,** run `MouseFace-Setup.exe` again and choose **Uninstall**, or run `install.cmd -Uninstall`. Your settings stay in `%LOCALAPPDATA%\MouseFace`; delete that folder to remove them too. Nothing is written to the registry.
+**To uninstall,** find MouseFace in Settings > Apps > Installed apps (Apps & features on Windows 10) and choose **Uninstall**. Running `MouseFace-Setup.exe` again, or `install.cmd -Uninstall`, also uninstalls it. Your settings stay in `%LOCALAPPDATA%\MouseFace`; delete that folder to remove them too. The Installed apps entry is the only thing MouseFace writes to the registry, and it is under your account.
 
 ### From a script or an AI agent
 
@@ -70,7 +70,7 @@ Each button can be:
 | Left click, Right click, Middle click, Back button, Forward button | that mouse button, held for as long as you hold yours |
 | Double click | a double click. Holding the button and moving selects word by word |
 | Click lock | press once to hold the left button down (for long drags), press again to let go |
-| Shortcut | keys joined by `+`, like `Ctrl+C`, `Alt+F4`, `BrowserBack` or `VolumeUp`. Windows keeps shortcuts with the Windows key for itself, so the window can't record them; type those, like `Win+D`, in settings.ini |
+| Shortcut | keys joined by `+`, like `Ctrl+C` or `Alt+F4`, pressed and let go as you press the button. A single key, like `F13` or `BrowserBack`, and `Ctrl`, `Shift`, `Alt` and `Win` on their own or together, are held for as long as you hold the button (for push-to-talk, Ctrl+click and the like). Windows keeps shortcuts with the Windows key for itself, so the window can't record them; type those, like `Win+D`, in settings.ini |
 | Disabled | nothing |
 
 Key names: letters, digits, `F1` to `F24`, `Ctrl`, `Shift`, `Alt`, `Win`, `Enter`, `Esc`, `Tab`, `Space`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Up`, `Down`, `Left`, `Right`, `PrintScreen`, `CapsLock`, `Menu`, `Plus`, `Minus`, `Comma`, `Period`, `Semicolon`, `Slash`, `Backslash`, `Quote`, `Backquote`, `OpenBracket`, `CloseBracket`, `VolumeUp`, `VolumeDown`, `Mute`, `PlayPause`, `NextTrack`, `PrevTrack`, `MediaStop`, `BrowserBack`, `BrowserForward`, `BrowserRefresh`, `BrowserHome`.
@@ -81,7 +81,7 @@ The Settings window saves to `%LOCALAPPDATA%\MouseFace\settings.ini`, which you 
 
 ```ini
 [Mouse]
-Match = Evoluent          ; any Evoluent mouse; or Any for all mice; or vendor:product like 1A7C:0191
+Match = Evoluent          ; any Evoluent mouse; or Any for every mouse with an ID; or vendor:product like 1A7C:0191
 
 [Buttons]                 ; Left, Right, Middle, Back, Forward, Double, ClickLock, Keys Ctrl+C or None
 Left    = Left
@@ -115,6 +115,8 @@ Popup = yes
 | VerticalMouse 4 Bluetooth and Mac models | Evoluent's vendor ID in either Bluetooth format, if Windows pairs the mouse (Evoluent lists these models as Mac-only) |
 | Other mice | Pick it under **Mouse** in Settings, or `Match = vendor:product`. Its five standard buttons should work, but only Evoluent mice have been tried |
 
+**All mice** in Settings (`Match = Any`) means every mouse that reports an ID. Most laptop touchpads report none, so they are left alone.
+
 Tested primarily on the wired VerticalMouse 4 Right. Results from other models are welcome: please open an issue with your mouse details.
 
 The VerticalMouse 4 Right's buttons without a driver:
@@ -133,18 +135,20 @@ MouseFace is Windows-only. On a Mac, Karabiner-Elements (free) and SteerMouse ca
 
 ## Limits
 
-- **Administrator windows** (Task Manager, installers): while one is in front, your buttons do their normal clicks, because Windows keeps ordinary programs out of those windows.
-- **If MouseFace is force-closed** (End task) while you hold a remapped button, that button can stay down. Press it once to release it.
+- **Administrator windows** (Task Manager, installers): while one is in front, your buttons do their normal clicks, because Windows keeps ordinary programs out of those windows. A remapped button held down onto one and let go there is let go once you're back in an ordinary window.
+- **If MouseFace is force-closed** (End task), or a UAC prompt or the lock screen comes up, while you hold a remapped button, that button can stay down. Press it once to release it.
+- **Tools that share one mouse between PCs** (Mouse Without Borders, Barrier, Input Leap): while the pointer is on the other PC, MouseFace may still remap and dim this one. Pause it from the tray while you work over there.
+- **Games that read the mouse directly** (through Raw Input) see your physical button as well as its replacement.
 
 ## How it works
 
 - Windows shows MouseFace each click before any program gets it. If the click came from your chosen mouse and you've remapped that button, MouseFace sends your choice instead. Every other click goes through untouched.
-- Dimming lays a dark, see-through layer over each screen. It doesn't change the backlight, and screenshots leave it out.
+- Dimming lays a dark, see-through layer over each screen. It doesn't change the backlight, and screenshots leave it out (on Windows 10 version 2004 and later).
 - If MouseFace stops or crashes, your mouse goes back to its normal clicks.
 
 ## Building and testing
 
-`install.ps1 -Test` builds MouseFace and runs its tests without installing anything; `-Trial` also runs it until you sign out.
+`install.ps1 -Test` builds MouseFace and runs its tests without installing anything; `-Trial` also runs it, without adding the sign-in shortcut.
 
 ## License
 

@@ -39,12 +39,20 @@ namespace MouseFace
         readonly IntPtr rawBuffer = Marshal.AllocHGlobal(16384);
         readonly IntPtr oneRaw = Marshal.AllocHGlobal(256);
         readonly ManualResetEvent ready = new ManualResetEvent(false);
+        readonly object startGate = new object();
         RawSink sink;
         IntPtr hook;
         int threadId;
         Thread thread;
-        int errors, unlabelled;
+        bool started, abandoned; // under startGate
+        int errors, unlabelled, lateNotes, settledNotes;
         int deciding = -1; // the button being decided, for the error path; -1 when none
+        int keysCheckedAt;
+        bool keysBlocked;
+        IntPtr foregroundHook;
+        readonly Native.WinEventProc onForeground;
+        // A press that took longer than this to decide is let through unchanged (see Handle).
+        internal const int LateMs = 200;
 
         internal volatile bool Paused, Failed, Present, ReportButtons;
         internal volatile int LastHookTick = Environment.TickCount;
@@ -62,6 +70,7 @@ namespace MouseFace
             this.remapper = remapper;
             this.injector = injector;
             proc = OnMouse; // a field keeps the delegate alive for as long as Windows may call it
+            onForeground = OnForeground;
         }
 
         internal bool Hooked { get { return hook != IntPtr.Zero; } }
@@ -77,7 +86,14 @@ namespace MouseFace
             thread.Priority = ThreadPriority.Highest;
             thread.Name = "hook";
             thread.Start();
-            return ready.WaitOne(3000) && hook != IntPtr.Zero;
+            ready.WaitOne(10000); // a busy sign-in can be slow
+            lock (startGate)
+            {
+                // Too late, the program is about to say it isn't running: the hook must not go in
+                // after all and remap behind that message.
+                if (!started) abandoned = true;
+                return started && hook != IntPtr.Zero;
+            }
         }
 
         internal void Post(uint msg) { if (threadId != 0) Native.PostThreadMessage(threadId, msg, IntPtr.Zero, IntPtr.Zero); }
@@ -97,18 +113,23 @@ namespace MouseFace
             try { sink = new RawSink(this); }
             catch (Exception ex) { Note("Raw Input did not start, so clicks cannot be told apart by device: " + ex.Message); }
             RefreshPresence();
-            hook = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, proc, Native.GetModuleHandle(null), 0);
+            lock (startGate)
+            {
+                if (!abandoned) hook = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, proc, Native.GetModuleHandle(null), 0);
+                started = true;
+            }
             ready.Set();
-            if (hook == IntPtr.Zero) return;
+            if (hook == IntPtr.Zero) { if (sink != null) sink.DestroyHandle(); return; }
             // Windows calls OnMouse from inside GetMessage; the loop itself only waits.
             while (Native.GetMessage(out m, IntPtr.Zero, 0, 0) > 0)
             {
                 if (m.hwnd != IntPtr.Zero) { Native.DispatchMessage(ref m); continue; }
                 if (m.message == WM_APP_REHOOK) Rehook();
                 else if (m.message == WM_APP_RECONFIG) { chosen.Clear(); RefreshPresence(); }
-                else if (m.message == WM_APP_RELEASE) ReleaseHeld();
-                else if (m.message == WM_APP_QUIT) { ReleaseHeld(); break; }
+                else if (m.message == WM_APP_RELEASE) ReleaseHeld(false);
+                else if (m.message == WM_APP_QUIT) { ReleaseHeld(true); break; }
             }
+            WatchForeground(false);
             Native.UnhookWindowsHookEx(hook);
             hook = IntPtr.Zero;
             if (sink != null) sink.DestroyHandle();
@@ -119,32 +140,91 @@ namespace MouseFace
         IntPtr OnMouse(int nCode, IntPtr wParam, IntPtr lParam)
         {
             LastHookTick = Environment.TickCount;
+            bool swallow = false;
             if (nCode >= 0 && !Failed)
             {
                 int msg = wParam.ToInt32();
                 if (msg != Native.WM_MOUSEMOVE) // plain movement: nothing to decide
                 {
-                    long started = Stopwatch.GetTimestamp();
-                    bool swallow = false;
-                    try { swallow = Handle(msg, lParam); }
+                    long begun = Stopwatch.GetTimestamp();
+                    try { swallow = Handle(msg, lParam, begun); }
                     catch (Exception ex)
                     {
                         // A bug here must never take the mouse down: let go of anything held, let this
                         // event through unchanged (and later its up), and keep going.
-                        try { ReleaseHeld(); if (deciding >= 0) remapper.MarkPassed((Btn)deciding); } catch (Exception) { }
+                        try { ReleaseHeld(false); if (deciding >= 0) remapper.MarkPassed((Btn)deciding); } catch (Exception) { }
                         NoteError(ex);
                         swallow = false;
                     }
                     deciding = -1;
-                    long took = Stopwatch.GetTimestamp() - started;
+                    long took = Stopwatch.GetTimestamp() - begun;
                     if (took > MaxHookTicks) MaxHookTicks = took;
-                    if (swallow) return new IntPtr(1);
                 }
+                // The hook hears input again, so what presses that ended unheard still hold can go now.
+                if (remapper.Owes) { try { Settle(); } catch (Exception ex) { NoteError(ex); } }
             }
-            return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+            return swallow ? new IntPtr(1) : Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
         }
 
-        bool Handle(int msg, IntPtr lParam)
+        void Settle()
+        {
+            pending.Clear();
+            remapper.Settle(pending, KeysBlocked(false));
+            if (pending.Count > 0)
+            {
+                injector.Enqueue(pending);
+                if (settledNotes++ < 5)
+                    Note("a button was let go where the hook could not hear it (an admin window had it); let go of " + Out.Describe(pending));
+            }
+            WatchForeground(remapper.OwesKeys);
+        }
+
+        // Held keys only, whenever no admin window is in front (Remapper.SettleKeys); early: a new window
+        // came to the front, so also those whose release is in the latest report.
+        void SettleKeys(bool early, bool fresh)
+        {
+            pending.Clear();
+            bool unheard = remapper.SettleKeys(pending, KeysBlocked(fresh), early);
+            if (pending.Count > 0)
+            {
+                injector.Enqueue(pending);
+                if (unheard && settledNotes++ < 5)
+                    Note("held keys were let go where the hook could not hear their button (an admin window had it): " + Out.Describe(pending));
+            }
+            WatchForeground(remapper.OwesKeys);
+        }
+
+        // Whether key releases would be dropped now because an admin window is in front. Asked only
+        // while keys are held or owed. A "blocked" answer is kept for 100 ms, as a stale one only delays
+        // a release; "not blocked" is asked afresh every time, as a stale one could send a release just
+        // as an admin window came to the front, where Windows drops it and the key stays down.
+        bool KeysBlocked(bool fresh)
+        {
+            if (!remapper.HoldsAnyKeys) return keysBlocked = false;
+            int now = Environment.TickCount;
+            if (fresh || !keysBlocked || unchecked(now - keysCheckedAt) >= 100) { keysBlocked = Desk.ForegroundOutranksUs(); keysCheckedAt = now; }
+            return keysBlocked;
+        }
+
+        // While held keys wait for an admin window to go, Windows says when another window comes to the
+        // front, so they are let go then, even if the mouse doesn't move (Alt+Tab, Esc).
+        void WatchForeground(bool on)
+        {
+            if (on && foregroundHook == IntPtr.Zero)
+                foregroundHook = Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND, IntPtr.Zero,
+                    onForeground, 0, 0, Native.WINEVENT_OUTOFCONTEXT); // its own windows too: Settings, a message box
+            else if (!on && foregroundHook != IntPtr.Zero) { Native.UnhookWinEvent(foregroundHook); foregroundHook = IntPtr.Zero; }
+        }
+
+        // Keys only: a mouse button's release goes to the window under the pointer, which may still be
+        // the admin window, so those wait for an event the hook hears.
+        void OnForeground(IntPtr hook, uint evt, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+        {
+            try { if (!Failed) SettleKeys(true, true); }
+            catch (Exception ex) { NoteError(ex); }
+        }
+
+        bool Handle(int msg, IntPtr lParam, long begun)
         {
             uint data = (uint)Marshal.ReadInt32(lParam, 8);
             bool injected = (Marshal.ReadInt32(lParam, 12) & Native.LLMHF_INJECTED) != 0;
@@ -161,17 +241,47 @@ namespace MouseFace
             if (!Buttons.Classify(msg, data, out b, out down)) return false;
             IntPtr dev = IntPtr.Zero;
             bool fromChosen = test;
+            bool swapped = Buttons.Swapped();
             if (!test)
             {
-                bool labelled = Identify(Buttons.RawFlag(Buttons.Physical(b, Buttons.Swapped()), down), false, out dev);
+                bool labelled = Identify(Buttons.RawFlag(Buttons.Physical(b, swapped), down), out dev);
                 fromChosen = labelled && IsChosen(dev);
                 if (!labelled && down && Present && unlabelled++ < 5)
                     Note("a " + b + " press came with no device named (a precision touchpad does this); passed it through unchanged");
             }
 
+            // Windows waits only so long for this hook, then passes the click on itself. A press that
+            // took this long to decide (the program stalled: memory paged out, a garbage collection)
+            // may have happened already, so it goes through as it is, and its release with it, rather
+            // than happen twice. Only time spent here counts: other programs' hooks, before this one,
+            // have their own allowance.
+            long tookMs = (Stopwatch.GetTimestamp() - begun) * 1000 / Stopwatch.Frequency;
+            if (down && fromChosen && tookMs > LateMs)
+            {
+                fromChosen = false;
+                if (lateNotes++ < 5) Note("deciding a " + b + " press took " + tookMs + " ms, so Windows may have passed it on already; let it through unchanged");
+            }
+
+            // Something else let the left button go while it was locked down, so this press locks again.
+            if (down && fromChosen && remapper.ClickLocked && remapper.Config.For(b).Kind == ActKind.ClickLock
+                && !Native.KeyDown(Buttons.Physical(Btn.Left, swapped) == Btn.Left ? 0x01 : 0x02)) // VK_LBUTTON, VK_RBUTTON: physical buttons
+                remapper.LockLost();
+
+            // A held key let go while an admin window is in front: Windows would drop the key release,
+            // so it waits (Remapper.Settle).
+            if (!down && remapper.HoldsKeys(b) && Desk.ForegroundOutranksUs())
+            {
+                keysBlocked = true;
+                keysCheckedAt = Environment.TickCount;
+                remapper.Defer(b);
+                WatchForeground(true);
+                return true;
+            }
+
             pending.Clear();
             bool wholeName;
             deciding = down ? (int)b : -1;
+            remapper.KeysBlocked = KeysBlocked(false); // owed key releases wait while an admin window is in front
             bool swallow = remapper.Decide(b, down, fromChosen, Paused, pending, out wholeName);
             if (pending.Count > 0) injector.Enqueue(pending);
             if (wholeName && Selector != null) Selector.Ask(Marshal.ReadInt32(lParam, 0), Marshal.ReadInt32(lParam, 4)); // MSLLHOOKSTRUCT.pt
@@ -181,6 +291,7 @@ namespace MouseFace
             if (w != null)
                 w(string.Format("{0,-7} {1,-4} {2,-16} ->  {3}", b, down ? "down" : "up", fromChosen ? "(chosen mouse)" : "(other device)",
                     swallow ? (pending.Count > 0 ? Out.Describe(pending) : "nothing") : "passed through"));
+            if (foregroundHook != IntPtr.Zero && !remapper.OwesKeys) WatchForeground(false); // nothing waits any more
             return swallow;
         }
 
@@ -192,15 +303,15 @@ namespace MouseFace
             if (!Config.IsDimChord(c.Dim, Native.KeyDown(Native.VK_SHIFT), Native.KeyDown(Native.VK_CONTROL),
                 Native.KeyDown(Native.VK_MENU), Native.KeyDown(Native.VK_LWIN) || Native.KeyDown(Native.VK_RWIN))) return false;
             IntPtr dev;
-            if (!Identify(Buttons.RawWheel, true, out dev) || !IsChosen(dev)) return false;
+            if (!Identify(Buttons.RawWheel, out dev) || !IsChosen(dev)) return false;
             Native.PostMessage(Ui, UiMsg.Dim, new IntPtr((int)(short)(data >> 16)), IntPtr.Zero);
             return true;
         }
 
-        bool Identify(ushort flag, bool newest, out IntPtr dev)
+        bool Identify(ushort flag, out IntPtr dev)
         {
             Drain(); // reports already queued but not yet read
-            return attribution.Claim(flag, newest, Environment.TickCount, out dev);
+            return attribution.Claim(flag, Environment.TickCount, out dev);
         }
 
         // Whether a device is the mouse being remapped. Remembered per device; forgotten when devices
@@ -217,28 +328,33 @@ namespace MouseFace
             return yes;
         }
 
-        internal void ReleaseHeld()
+        // Lets go of everything held. final: on the way out, everything goes, whatever is in front;
+        // otherwise held keys an admin window would drop wait, owed, until it has gone.
+        internal void ReleaseHeld(bool final)
         {
+            remapper.KeysBlocked = !final && KeysBlocked(true);
             pending.Clear();
             remapper.ReleaseAll(pending);
             if (pending.Count > 0) injector.Enqueue(pending);
+            if (threadId == Native.GetCurrentThreadId()) WatchForeground(!final && remapper.OwesKeys);
         }
 
-        void Rehook()
+        bool Rehook()
         {
             // The new hook goes in before the old one comes out, so no click slips through.
             IntPtr fresh = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, proc, Native.GetModuleHandle(null), 0);
-            if (fresh == IntPtr.Zero) return;
+            if (fresh == IntPtr.Zero) return false;
             Native.UnhookWindowsHookEx(hook);
             hook = fresh;
             LastHookTick = Environment.TickCount;
+            return true;
         }
 
         void Fail(int reason)
         {
             if (Failed) return;
             Failed = true; // from here on the hook lets everything through
-            try { ReleaseHeld(); } catch (Exception) { }
+            try { ReleaseHeld(true); } catch (Exception) { }
             if (Ui != IntPtr.Zero) Native.PostMessage(Ui, UiMsg.Stop, new IntPtr(reason), IntPtr.Zero);
         }
 
@@ -289,10 +405,31 @@ namespace MouseFace
             int now = Environment.TickCount;
             RawReportsSeen++;
             attribution.OnReport(dev, flags, now);
+            remapper.NextReport(); // the hook has heard all it will of the reports before this one
             if (Failed || LiveTest || dev == IntPtr.Zero || (flags == 0 && dx == 0 && dy == 0)) return;
             if (!IsChosen(dev)) return;
+            if ((flags & Buttons.RawButtons) != 0) Track(flags);
+            // A key release goes to the window in front, so a held key whose button Raw Input saw let go
+            // is let go now, unless an admin window is in front; the hook's own hearing of that release,
+            // if it comes, is then swallowed. Only a key that has to wait turns the window watch on.
+            if (remapper.OwesKeys) SettleKeys(true, false);
             if (injector.Stuck()) { Fail(StopStuck); return; }
-            if (watch.OnChosenMouseUse(now, LastHookTick)) OnHookSilent(now);
+            int x = 0, y = 0;
+            Native.POINT pt;
+            if (unchecked(now - LastHookTick) > HookWatch.SilentMs && Native.GetCursorPos(out pt)) { x = pt.x; y = pt.y; }
+            if (watch.OnChosenMouseUse(now, LastHookTick, x, y)) OnHookSilent(now);
+        }
+
+        // The chosen mouse's own presses and releases as Raw Input saw them, which Windows reports even
+        // when an admin window keeps them from the hook (Remapper.RawUp). Releases first: one report can
+        // hold both.
+        void Track(ushort flags)
+        {
+            bool swapped = Buttons.Swapped();
+            for (int i = 0; i < 5; i++)
+                if ((flags & Buttons.RawFlag(Buttons.Physical((Btn)i, swapped), false)) != 0) remapper.RawUp((Btn)i);
+            for (int i = 0; i < 5; i++)
+                if ((flags & Buttons.RawFlag(Buttons.Physical((Btn)i, swapped), true)) != 0) remapper.RawDown((Btn)i);
         }
 
         void OnHookSilent(int now)
@@ -303,9 +440,9 @@ namespace MouseFace
             if (!Desk.InputOnThisDesktop() || Desk.ForegroundOutranksUs() || Desk.PointerWindowOutranksUs()) return;
             if (budget.Allow(now))
             {
-                ReleaseHeld(); // ups that came while the hook was gone were never seen
-                Rehook();
-                Note("the mouse hook looked dropped (the chosen mouse was in use, the hook heard nothing); re-attached it");
+                ReleaseHeld(false); // ups that came while the hook was gone were never seen
+                Note("the mouse hook looked dropped (the chosen mouse was in use, the hook heard nothing); "
+                    + (Rehook() ? "re-attached it" : "re-attaching it failed"));
             }
             else Fail(StopHookDropped);
         }
@@ -316,7 +453,7 @@ namespace MouseFace
             if (change == Native.GIDC_REMOVAL && chosen.TryGetValue(dev, out was))
             {
                 chosen.Remove(dev);
-                if (was) ReleaseHeld(); // its button-ups will never come, whatever else is still attached
+                if (was) ReleaseHeld(false); // its button-ups will never come, whatever else is still attached
             }
             RefreshPresence();
         }
@@ -330,7 +467,7 @@ namespace MouseFace
             foreach (MouseDevice d in mice) if (IsChosen(d.Handle)) any = true;
             if (any == Present) return;
             Present = any;
-            if (!any) ReleaseHeld(); // its button-ups will never come
+            if (!any) ReleaseHeld(false); // its button-ups will never come
             if (Ui != IntPtr.Zero) Native.PostMessage(Ui, UiMsg.Presence, new IntPtr(any ? 1 : 0), IntPtr.Zero);
         }
 
@@ -354,6 +491,16 @@ namespace MouseFace
             b.Clear();
             bool unused;
             new Dictionary<IntPtr, bool>().TryGetValue(IntPtr.Zero, out unused);
+            // And a press whose release goes unheard, through every step of letting it go later.
+            string error;
+            Remapper warm = new Remapper();
+            warm.Config = Config.Parse("[Buttons]\nMiddle = Keys Ctrl\n", out error);
+            warm.Decide(Btn.Middle, true, true, false, b, out unused);
+            warm.RawUp(Btn.Middle); warm.NextReport(); warm.RawDown(Btn.Middle);
+            unused = warm.OwesKeys && warm.Owes && warm.HoldsAnyKeys;
+            warm.Settle(b, true); warm.SettleKeys(b, false, true); warm.Settle(b, false); warm.ReleaseAll(b);
+            // The check a held key's release makes: the first call sets up its calls into Windows.
+            try { unused = Desk.ForegroundOutranksUs(); } catch (Exception) { }
         }
 
         sealed class RawSink : NativeWindow

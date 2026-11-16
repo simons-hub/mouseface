@@ -22,8 +22,10 @@ namespace MouseFace
 
         internal bool Matches(DeviceIds d)
         {
-            if (any) return true;
+            // Even "Any" needs an ID: a laptop's touchpad or pointing stick often reports none, and is
+            // left alone. (A precision touchpad reports no device at all, so it never gets this far.)
             if (!d.Known) return false;
+            if (any) return true;
             foreach (int[] id in ids)
                 if (id[0] == d.Vid && (id[1] < 0 || id[1] == d.Pid) && !(id[2] == 1 && d.SigVendor)) return true;
             return false;
@@ -40,6 +42,7 @@ namespace MouseFace
             foreach (string raw in t.Split(','))
             {
                 string p = raw.Trim();
+                if (p.Equals("Any", StringComparison.OrdinalIgnoreCase)) { error = "Any already means every mouse, so it goes alone, not in a list"; return false; }
                 if (p.Equals("Evoluent", StringComparison.OrdinalIgnoreCase)) { ids.Add(new int[] { EvoluentVendor, -1, 1 }); parts.Add("Evoluent"); continue; }
                 string[] vp = p.Split(':');
                 int vid, pid = -1;
@@ -215,8 +218,9 @@ namespace MouseFace
 ; Lines starting with ; are notes. Names are not case-sensitive.
 
 [Mouse]
-; Which mouse to remap: Evoluent (any Evoluent mouse), Any (all mice), or the
-; vendor:product ID of one mouse, like 1A7C:0191. The Settings window sets this.
+; Which mouse to remap: Evoluent (any Evoluent mouse), Any (every mouse that reports
+; an ID; most built-in touchpads report none), or the vendor:product ID of one mouse,
+; like 1A7C:0191. The Settings window sets this.
 Match = Evoluent
 
 [Buttons]
@@ -252,54 +256,97 @@ Popup = yes
     {
         internal static string FilePath { get { return Path.Combine(App.DataDir, "settings.ini"); } }
 
-        // Reads the file, writing the defaults first if there is none. On a mistake returns null and
-        // the reason.
-        internal static Config Load(out string error)
+        // Reads the file. At startup (create) it writes the defaults first if there is none; later, a
+        // missing file is left missing. On a mistake returns null and the reason; unreadable says the
+        // file could not be read at all, which is not a mistake in it. A file another program has open
+        // for a moment (an editor saving, a virus scan) is tried again for up to a second.
+        internal static Config Load(bool create, out string error, out bool unreadable)
         {
             error = null;
-            try
+            unreadable = false;
+            string text = null;
+            for (int attempt = 0; text == null; attempt++)
             {
-                if (!File.Exists(FilePath)) Save(Config.DefaultText);
-                return Config.Parse(File.ReadAllText(FilePath), out error);
+                try
+                {
+                    if (create && !File.Exists(FilePath)) Save(Config.DefaultText);
+                    text = Read();
+                }
+                catch (Exception ex)
+                {
+                    if (attempt < 10 && ex is IOException) { System.Threading.Thread.Sleep(100); continue; }
+                    error = "could not read " + FilePath + ": " + ex.Message;
+                    unreadable = true;
+                    return null;
+                }
             }
-            catch (Exception ex)
-            {
-                error = "could not read " + FilePath + ": " + ex.Message;
-                return null;
-            }
+            return Config.Parse(text, out error);
         }
 
-        // Writes through a temporary file, so a crash never leaves half a settings file.
+        // The file's text, decoded the way it was saved: UTF-8 with or without its mark, UTF-16, or an
+        // older editor's ANSI code page. Save writes it back the same way, so no note is garbled.
+        internal static string Read()
+        {
+            byte[] bytes = File.ReadAllBytes(FilePath);
+            Encoding e = EncodingOf(bytes);
+            int mark = e.GetPreamble().Length;
+            return e.GetString(bytes, mark, bytes.Length - mark);
+        }
+
+        internal static Encoding EncodingOf(byte[] b)
+        {
+            if (b.Length >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF) return new UTF8Encoding(true);
+            if (b.Length >= 2 && b[0] == 0xFF && b[1] == 0xFE) return new UnicodeEncoding(false, true);
+            if (b.Length >= 2 && b[0] == 0xFE && b[1] == 0xFF) return new UnicodeEncoding(true, true);
+            try { new UTF8Encoding(false, true).GetString(b); return new UTF8Encoding(false); }
+            catch (DecoderFallbackException) { return Encoding.Default; } // not UTF-8: the ANSI code page
+        }
+
+        // Writes through a temporary file, flushed to the disk before it takes the old one's place, so a
+        // crash or a power cut never leaves half a settings file. Keeps the old file's encoding.
         internal static void Save(string text)
         {
+            Encoding e = new UTF8Encoding(false);
+            if (File.Exists(FilePath)) e = EncodingOf(File.ReadAllBytes(FilePath));
             string tmp = FilePath + ".tmp";
-            File.WriteAllText(tmp, text, new UTF8Encoding(false));
-            if (File.Exists(FilePath)) File.Replace(tmp, FilePath, null);
-            else File.Move(tmp, FilePath);
+            try
+            {
+                using (FileStream f = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    byte[] mark = e.GetPreamble(), body = e.GetBytes(text);
+                    f.Write(mark, 0, mark.Length);
+                    f.Write(body, 0, body.Length);
+                    f.Flush(true);
+                }
+                if (File.Exists(FilePath)) File.Replace(tmp, FilePath, null);
+                else File.Move(tmp, FilePath);
+            }
+            finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch (Exception) { } }
         }
 
         // Changes the Match line under [Mouse], keeping every other line and note as it was.
         internal static string WithMatch(string text, string match) { return WithValue(text, "Mouse", "Match", match); }
 
-        // Sets key = value under [section], keeping every other line, note and alignment as it was.
-        // A missing line goes after the section's last setting; a missing section goes at the end.
+        // Sets key = value under [section], keeping every other line, note, alignment and line ending
+        // as it was. The key is looked for in every block of its section, as the parser reads them as
+        // one. A missing line goes after the first block's last setting; a missing section, at the end.
         internal static string WithValue(string text, string section, string key, string value)
         {
+            string newline = NewlineOf(text);
             List<string> lines = new List<string>(text.Replace("\r\n", "\n").Split('\n'));
-            int start = -1;
+            bool inSection = false;
+            int header = -1, end = -1; // the section's first block: its header, and the line after it
             for (int i = 0; i < lines.Count; i++)
             {
-                string t = lines[i];
-                int note = t.IndexOf(';');
-                if (note >= 0) t = t.Substring(0, note);
-                t = t.Trim();
+                string t = Bare(lines[i]);
                 if (t.StartsWith("["))
                 {
-                    if (start >= 0) { lines.Insert(LastSetting(lines, start, i) + 1, key + " = " + value); return Join(lines); }
-                    if (t.EndsWith("]") && t.Substring(1, t.Length - 2).Trim().Equals(section, StringComparison.OrdinalIgnoreCase)) start = i;
+                    if (inSection && end < 0) end = i;
+                    inSection = t.EndsWith("]") && t.Substring(1, t.Length - 2).Trim().Equals(section, StringComparison.OrdinalIgnoreCase);
+                    if (inSection && header < 0) header = i;
                     continue;
                 }
-                if (start >= 0 && t.StartsWith(key, StringComparison.OrdinalIgnoreCase) && t.Substring(key.Length).TrimStart().StartsWith("="))
+                if (inSection && t.StartsWith(key, StringComparison.OrdinalIgnoreCase) && t.Substring(key.Length).TrimStart().StartsWith("="))
                 {
                     string line = lines[i];
                     int eq = line.IndexOf('=');
@@ -307,10 +354,10 @@ Popup = yes
                     string old = (tail >= 0 ? line.Substring(eq + 1, tail - eq - 1) : line.Substring(eq + 1));
                     string pad = tail >= 0 ? new string(' ', Math.Max(1, old.Length - 1 - value.Length)) : ""; // the note keeps its column
                     lines[i] = line.Substring(0, eq + 1) + " " + value + (tail >= 0 ? pad + line.Substring(tail) : "");
-                    return Join(lines);
+                    return string.Join(newline, lines.ToArray());
                 }
             }
-            if (start >= 0) lines.Insert(LastSetting(lines, start, lines.Count) + 1, key + " = " + value);
+            if (header >= 0) lines.Insert(LastSetting(lines, header, end < 0 ? lines.Count : end) + 1, key + " = " + value);
             else
             {
                 while (lines.Count > 0 && lines[lines.Count - 1].Trim().Length == 0) lines.RemoveAt(lines.Count - 1);
@@ -319,16 +366,30 @@ Popup = yes
                 lines.Add(key + " = " + value);
                 lines.Add("");
             }
-            return Join(lines);
+            return string.Join(newline, lines.ToArray());
         }
 
-        // The last non-blank line from the section header up to (not including) end.
+        // A line without its note, as the parser reads it: "" for a blank line or a note.
+        static string Bare(string line)
+        {
+            int note = line.IndexOf(';');
+            string t = (note >= 0 ? line.Substring(0, note) : line).Trim();
+            return t.StartsWith("#") ? "" : t;
+        }
+
+        // The last setting from the section header up to (not including) end; a note after it may
+        // belong to the next section.
         static int LastSetting(List<string> lines, int header, int end)
         {
-            for (int i = end - 1; i > header; i--) if (lines[i].Trim().Length > 0) return i;
+            for (int i = end - 1; i > header; i--) if (Bare(lines[i]).Length > 0) return i;
             return header;
         }
 
-        static string Join(List<string> lines) { return string.Join("\r\n", lines.ToArray()); }
+        // The file's own line ending, so a save doesn't rewrite every line of an LF file.
+        static string NewlineOf(string text)
+        {
+            int n = text.IndexOf('\n');
+            return n < 0 || (n > 0 && text[n - 1] == '\r') ? "\r\n" : "\n";
+        }
     }
 }
