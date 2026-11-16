@@ -159,22 +159,65 @@ if (Get-Service -Name 'EvoMouse*' -ErrorAction SilentlyContinue) {
     Write-Warning "Evoluent's mouse driver is still installed, though its software is not. If buttons act strangely, remove the driver: Device Manager > Mice and other pointing devices."
 }
 
+# It runs as you: started from an admin window, the copy it starts would run as administrator.
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+$uacOn = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA -ErrorAction SilentlyContinue).EnableLUA -ne 0
+if (-not $UnitOnly -and $uacOn -and $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $text = "This window has admin rights, which $AppName doesn't use. Run this again from a normal window (not Run as administrator)."
+    if (-not $Quiet) { Show-Box $text }
+    Write-Host $text
+    exit 1
+}
+
+# Never over a newer version: that one has to be uninstalled first (-Uninstall).
+if (-not $Test -and (Test-Path -LiteralPath $appExe)) {
+    $source = [regex]::Match((Get-Content -Raw -LiteralPath (Join-Path $root 'src\App.cs')), 'Version = "([0-9.]+)"').Groups[1].Value
+    $installed = (Get-Item -LiteralPath $appExe).VersionInfo.ProductVersion
+    $newer = $false
+    try { $newer = [version]$installed -gt [version]$source } catch { }
+    if ($newer) {
+        $text = "$AppName $installed is installed, which is newer than this $source. To use $source instead, uninstall $installed first " +
+                "(install.cmd -Uninstall; your settings are kept), then run this again."
+        if (-not $Quiet) { Show-Box $text }
+        Write-Host $text
+        exit 1
+    }
+}
+
 $dir = if ($BuildDir) { $BuildDir } else { Join-Path ([IO.Path]::GetTempPath()) "$AppName-build" }
 if (-not $UnitOnly) {
     if (-not (Test-SendInputWorks)) {
         throw "One harmless injected input did not come back within 20 s, so input injection is blocked on this machine (usually another program's frozen mouse hook). Sign out or restart, then run this again. Nothing was changed."
     }
 }
-if (-not ($Test -and $UnitOnly)) { Stop-Running } # the live test refuses to run beside a running copy, and an install replaces it
-$built = Build-All $dir
-"Built $($built.App)"
-Invoke-Tests $built.Tests '--unit'
-if (-not $UnitOnly) {
-    Invoke-Tests $built.Tests '--system'
-    Invoke-Tests $built.Tests '--live'
+# The live test refuses to run beside a running copy, and an install replaces it. When nothing ends
+# up installed (a test run, or a build or test that fails), the copy that was running is started again.
+$restart = $false
+if (-not ($Test -and $UnitOnly)) {
+    $restart = [bool](Get-Process -Name $AppName -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $appExe })
+    Stop-Running
+}
+function Restart-Previous {
+    if ($restart) {
+        Start-Process -FilePath $appExe -WorkingDirectory $appDir
+        Write-Host "Your $AppName was restarted, as it was."
+    }
+}
+try {
+    $built = Build-All $dir
+    "Built $($built.App)"
+    Invoke-Tests $built.Tests '--unit'
+    if (-not $UnitOnly) {
+        Invoke-Tests $built.Tests '--system'
+        Invoke-Tests $built.Tests '--live'
+    }
+} catch {
+    Restart-Previous
+    throw
 }
 if ($Test) {
-    "Built and tested in $dir. Nothing was installed or started."
+    "Built and tested in $dir. Nothing was installed."
+    Restart-Previous
     return
 }
 

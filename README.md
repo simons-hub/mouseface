@@ -22,7 +22,7 @@ First uninstall other mouse software (Evoluent Mouse Manager or X-Mouse Button C
 
 1. Download `MouseFace-Setup.exe` from the [latest release](https://github.com/simons-hub/mouseface/releases/latest).
 2. Double-click it. It isn't code-signed yet, so Windows may say "Windows protected your PC": choose **More info**, then **Run anyway**.
-3. Choose **Install**. It installs for you only and needs no admin rights.
+3. Choose **Install**. It installs for you only and needs no admin rights. (Don't use **Run as administrator**: MouseFace won't run with admin rights.)
 4. The Settings window opens: choose what each button does, then **Save**.
 
 Each release lists the file's SHA-256 and carries GitHub's build attestation, which shows it was built from this repository's source.
@@ -42,18 +42,20 @@ MouseFace runs in the background, with its icon in the notification area by the 
 
 ### Update or uninstall
 
-**To update,** run the newer `MouseFace-Setup.exe` or `install.cmd`; your settings are kept.
+**To update,** run the newer `MouseFace-Setup.exe` or `install.cmd`; your settings are kept. Setup never replaces a newer version with an older one: to go back, uninstall first.
 
 **To uninstall,** run `MouseFace-Setup.exe` again and choose **Uninstall**, or run `install.cmd -Uninstall`. Your settings stay in `%LOCALAPPDATA%\MouseFace`; delete that folder to remove them too. Nothing is written to the registry.
 
 ### From a script or an AI agent
 
-The steps above open windows that wait for a person. To install with no prompts, write `%LOCALAPPDATA%\MouseFace\settings.ini` first (the format is under [settings.ini](#settingsini)), so the Settings window has nothing to set up, then run one of these. Each reports to the console and exits with 0 when it worked.
+The steps above open windows that wait for a person. To install with no prompts, write `%LOCALAPPDATA%\MouseFace\settings.ini` first (the format is under [settings.ini](#settingsini)), so the Settings window has nothing to set up, then run one of these. Each prints what happened and exits with 0 when it worked.
 
 ```powershell
-.\MouseFace-Setup.exe --install       # the download; --uninstall removes it
+.\MouseFace-Setup.exe --install | Out-String; $LASTEXITCODE    # the download; --uninstall removes it
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Quiet    # from source; -Uninstall removes it
 ```
+
+Keep the `| Out-String` (or run it through `cmd /c`): MouseFace-Setup.exe is a Windows program, and without it PowerShell neither waits for it nor shows what it printed.
 
 Use `install.ps1` directly rather than `install.cmd`, which waits for a key press at the end. If other mouse software is running, both stop and say so.
 
@@ -68,7 +70,7 @@ Each button can be:
 | Left click, Right click, Middle click, Back button, Forward button | that mouse button, held for as long as you hold yours |
 | Double click | a double click. Holding the button and moving selects word by word |
 | Click lock | press once to hold the left button down (for long drags), press again to let go |
-| Shortcut | keys joined by `+`, like `Ctrl+C`, `Alt+F4`, `Win+D`, `BrowserBack` or `VolumeUp` |
+| Shortcut | keys joined by `+`, like `Ctrl+C`, `Alt+F4`, `BrowserBack` or `VolumeUp`. Windows keeps shortcuts with the Windows key for itself, so the window can't record them; type those, like `Win+D`, in settings.ini |
 | Disabled | nothing |
 
 Key names: letters, digits, `F1` to `F24`, `Ctrl`, `Shift`, `Alt`, `Win`, `Enter`, `Esc`, `Tab`, `Space`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Up`, `Down`, `Left`, `Right`, `PrintScreen`, `CapsLock`, `Menu`, `Plus`, `Minus`, `Comma`, `Period`, `Semicolon`, `Slash`, `Backslash`, `Quote`, `Backquote`, `OpenBracket`, `CloseBracket`, `VolumeUp`, `VolumeDown`, `Mute`, `PlayPause`, `NextTrack`, `PrevTrack`, `MediaStop`, `BrowserBack`, `BrowserForward`, `BrowserRefresh`, `BrowserHome`.

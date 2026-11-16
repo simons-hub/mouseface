@@ -17,6 +17,8 @@ jobs:
     steps:
       # Pinned to commits, not movable tags, so a hijacked tag can't change what runs here.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false # the build and tests never get the token
 
       - name: Build with the .NET Framework compiler and run the unit tests
         shell: powershell

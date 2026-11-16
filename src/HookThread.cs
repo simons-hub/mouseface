@@ -443,6 +443,26 @@ namespace MouseFace
             finally { Native.CloseHandle(token); }
         }
 
+        // True when this process was started with "Run as administrator" (UAC's full admin token). On a
+        // PC with UAC turned off there is no such token, so it is false there and MouseFace still runs.
+        internal static bool ElevatedByUac()
+        {
+            IntPtr token;
+            if (!Native.OpenProcessToken(Native.GetCurrentProcess(), 0x0008, out token)) return false; // TOKEN_QUERY
+            try
+            {
+                IntPtr buf = Marshal.AllocHGlobal(4);
+                try
+                {
+                    int needed;
+                    if (!Native.GetTokenInformation(token, 18, buf, 4, out needed)) return false; // TokenElevationType
+                    return Marshal.ReadInt32(buf) == 2; // TokenElevationTypeFull
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+            }
+            finally { Native.CloseHandle(token); }
+        }
+
         // The same for the window under the pointer: input aimed at an admin window is hidden too.
         internal static bool PointerWindowOutranksUs()
         {

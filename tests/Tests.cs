@@ -49,11 +49,11 @@ namespace MouseFace.Tests
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch (Exception) { }
             Application.EnableVisualStyles(); // as the program does, so the controls look as they will
             Directory.CreateDirectory(dir);
-            string error;
-            Config c = Config.Parse("[Buttons]\nMiddle = Right\nRight = Double\nBack = Keys Alt+Left\nForward = None\n", out error);
-            if (c == null) { Console.WriteLine(error); return 1; }
+            Config c = SampleConfig();
             SettingsForm settings = new SettingsForm(c, delegate(string text) { return null; }, null);
             Shot(settings, Path.Combine(dir, "settings.png"), delegate { settings.OnButton(Btn.Right, true, true); });
+            SettingsForm bigger = new SettingsForm(c, delegate(string text) { return null; }, null);
+            Shot(bigger, Path.Combine(dir, "settings-150.png"), delegate { bigger.RescaleTo(bigger.Dpi * 3 / 2); });
             SettingsForm touchpad = new SettingsForm(c, delegate(string text) { return null; }, null);
             Shot(touchpad, Path.Combine(dir, "settings-touchpad.png"), delegate { touchpad.OnButton(Btn.Left, false, false); });
             Shot(new AboutForm(), Path.Combine(dir, "about.png"), null);
@@ -66,6 +66,14 @@ namespace MouseFace.Tests
                 host.Close();
             }
             return 0;
+        }
+
+        internal static Config SampleConfig()
+        {
+            string error;
+            Config c = Config.Parse("[Buttons]\nMiddle = Right\nRight = Double\nBack = Keys Alt+Left\nForward = None\n", out error);
+            if (c == null) throw new InvalidOperationException(error);
+            return c;
         }
 
         static void Shot(Form f, string file, Action prepare)
@@ -129,6 +137,21 @@ namespace MouseFace.Tests
     {
         static void Check(string n, bool ok) { TestMain.Check(n, ok); }
         static void Same(string n, string want, string got) { TestMain.Same(n, want, got); }
+
+        // Windows' "came from the internet" mark is a hidden stream named Zone.Identifier on the file.
+        static void Mark(string file)
+        {
+            IntPtr h = Native.CreateFile(file + ":Zone.Identifier", 0x40000000, 0, IntPtr.Zero, 2, 0x80, IntPtr.Zero); // write, create always
+            if (h != new IntPtr(-1)) Native.CloseHandle(h);
+        }
+
+        static bool HasMark(string file)
+        {
+            IntPtr h = Native.CreateFile(file + ":Zone.Identifier", 0x80000000, 1, IntPtr.Zero, 3, 0x80, IntPtr.Zero); // read, open existing
+            if (h == new IntPtr(-1)) return false;
+            Native.CloseHandle(h);
+            return true;
+        }
 
         internal static Config Parse(string text)
         {
@@ -350,10 +373,44 @@ namespace MouseFace.Tests
                 Installer.Remove(dir, startup, menu);
                 Check("uninstall removes the program and both shortcuts", !File.Exists(Path.Combine(dir, App.Name + ".exe")) && !File.Exists(startup) && !File.Exists(menu));
                 Check("uninstall keeps settings.ini", File.Exists(Path.Combine(dir, "settings.ini")));
+
+                // A download carries Windows' "came from the internet" mark; the installed copy must not.
+                string download = Path.Combine(home, "MouseFace-Setup.exe"), installed = Path.Combine(dir, App.Name + ".exe");
+                // A stand-in, not a program: a real program marked as downloaded makes Windows Defender
+                // upload it to Microsoft for a look, with a notification, every time the tests run.
+                File.WriteAllText(download, "a stand-in for the downloaded setup, not a program");
+                Mark(download);
+                Check("(the test can mark a file as downloaded)", HasMark(download));
+                Installer.Place(download, dir);
+                Check("setup installs a downloaded copy without its downloaded mark", File.Exists(installed) && !HasMark(installed));
+                Mark(installed);
+                Installer.Place(download, dir);
+                Check("updating drops a mark the old installed copy had", File.Exists(installed) && !HasMark(installed));
             }
             finally { try { Directory.Delete(home, true); } catch (Exception) { } }
             Check("a copy outside the install folder is setup", Installer.IsSetup(Path.Combine(home, App.Name + ".exe")));
             Check("the installed copy is not setup", !Installer.IsSetup(Installer.Exe.ToUpperInvariant()));
+            Check("the installed copy refuses to uninstall itself", Installer.SelfUninstallProblem(Installer.Exe) != null);
+            Check("setup may uninstall", Installer.SelfUninstallProblem(Path.Combine(home, "MouseFace-Setup.exe")) == null);
+
+            // Versions: setup never replaces a newer installed version.
+            Check("1.1.0 is newer than 1.0.0", Installer.Newer("1.1.0", "1.0.0"));
+            Check("1.10.0 is newer than 1.9.0 (numbers, not text)", Installer.Newer("1.10.0", "1.9.0"));
+            Check("the same version is not newer", !Installer.Newer("1.0.0", "1.0.0"));
+            Check("an older version is not newer", !Installer.Newer("1.0.0", "1.1.0"));
+            Check("an unreadable version is never newer", !Installer.Newer("?", "1.0.0") && !Installer.Newer(null, "1.0.0"));
+
+            // The Settings window writes only what changed in it, so an edit made in the file while the
+            // window was open survives a Save.
+            Dictionary<string, string> shown = new Dictionary<string, string>();
+            shown["Buttons/Middle"] = "Right"; shown["Buttons/Back"] = "Back"; shown["Dimming/Step"] = "3";
+            Dictionary<string, string> now = new Dictionary<string, string>(shown);
+            now["Buttons/Middle"] = "Double";
+            Same("a Save keeps a file edit the window didn't change, and writes the one it did",
+                "[Buttons]\r\nMiddle = Double\r\nBack = Keys Win+D\r\n\r\n[Dimming]\r\nStep = 3",
+                SettingsForm.WithChanges("[Buttons]\r\nMiddle = Right\r\nBack = Keys Win+D\r\n\r\n[Dimming]\r\nStep = 3", shown, now));
+            Same("a Save with nothing changed leaves the file as it is", "[Buttons]\r\nBack = Keys Win+D",
+                SettingsForm.WithChanges("[Buttons]\r\nBack = Keys Win+D", shown, shown));
 
             // The icons are built in, each with a frame drawn for every tray size.
             foreach (string ico in new string[] { App.Name + ".ico", App.Name + "-paused.ico" })
@@ -578,6 +635,11 @@ namespace MouseFace.Tests
     {
         static void Check(string n, bool ok) { TestMain.Check(n, ok); }
 
+        static void Bounds(Control c, Dictionary<Control, Rectangle> into)
+        {
+            foreach (Control child in c.Controls) { into[child] = child.Bounds; Bounds(child, into); }
+        }
+
         internal static int Run()
         {
             using (Shade s = new Shade(new Rectangle(0, 0, 10, 10)))
@@ -605,6 +667,48 @@ namespace MouseFace.Tests
             while (h.HookHandle == before && rw.ElapsedMilliseconds < 2000) Thread.Sleep(5);
             Check("re-attaching swaps in a fresh hook on the hook thread", up && h.HookHandle != before && h.Hooked);
             Check("the hook thread lets go, unhooks and ends when asked", h.Quit(2000) && !h.Hooked);
+
+            Check("started without admin rights, so it would run", !Desk.ElevatedByUac());
+
+            // A window moved to a screen scaled differently grows or shrinks to match, and back again.
+            Config shown = TestMain.SampleConfig();
+            using (SettingsForm f = new SettingsForm(shown, delegate(string text) { return null; }, null))
+            {
+                f.StartPosition = FormStartPosition.Manual;
+                f.Location = new Point(-20000, -20000);
+                f.ShowInTaskbar = false;
+                f.Show();
+                Application.DoEvents();
+                // One trip there and back first: a window's very first layout can be a pixel or two off
+                // (a dropdown's row), and the first rescale lays it out afresh.
+                int dpi = f.Dpi;
+                f.RescaleTo(dpi * 3 / 2);
+                f.RescaleTo(dpi);
+                Application.DoEvents();
+                int w = f.Width, ht = f.Height;
+                float text = f.Font.Size;
+                Dictionary<Control, Rectangle> was = new Dictionary<Control, Rectangle>();
+                Bounds(f, was);
+                f.RescaleTo(dpi * 3 / 2);
+                Application.DoEvents();
+                double grew = f.Width / (double)w, grewH = f.Height / (double)ht;
+                Check("a window moved to a screen at 150% of this one's scaling grows to match (" + grew.ToString("0.00") + "x wide, "
+                    + grewH.ToString("0.00") + "x tall)", grew > 1.4 && grew < 1.6 && grewH > 1.4 && grewH < 1.6 && Math.Abs(f.Font.Size / text - 1.5) < 0.01);
+                f.RescaleTo(dpi);
+                Application.DoEvents();
+                Dictionary<Control, Rectangle> back = new Dictionary<Control, Rectangle>();
+                Bounds(f, back);
+                int moved = 0;
+                foreach (KeyValuePair<Control, Rectangle> b in was)
+                    if (back[b.Key] != b.Value)
+                    {
+                        moved++;
+                        Console.WriteLine("info    " + b.Key.GetType().Name + " \"" + b.Key.Text + "\": " + b.Value + " -> " + back[b.Key]);
+                    }
+                Check("and moved back, every control returns exactly to its size and place (" + w + "x" + ht + " -> " + f.Width + "x" + f.Height + ")",
+                    moved == 0 && f.Width == w && f.Height == ht && f.Font.Size == text);
+                f.Close();
+            }
 
             List<MouseDevice> mice = Devices.Mice();
             Check("lists the pointing devices", mice != null);

@@ -39,12 +39,18 @@ namespace MouseFace
             + "  --quit           ask the running copy to let go of everything and exit\n"
             + "  --install        install this copy for the current user and start it, without asking\n"
             + "  --uninstall      remove the installed copy and its shortcuts, keeping the settings\n"
+            + "                   (run it from MouseFace-Setup.exe: the installed copy can't remove itself)\n"
             + "Settings: settings.ini in %LOCALAPPDATA%\\" + App.Name + " (tray menu > Settings).";
         internal const string QuitEventName = @"Local\" + App.Name + ".quit";
+
+        const string NotAsAdmin = App.Name + " doesn't run with admin rights, so it did not start. "
+            + "Start it normally, not with Run as administrator.";
 
         [STAThread]
         static int Main(string[] args)
         {
+            // It needs no admin rights, and with them its clicks would reach admin windows too.
+            bool elevated = Desk.ElevatedByUac();
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--watch") watching = true;
@@ -53,7 +59,8 @@ namespace MouseFace
                 else if (args[i] == "--install" || args[i] == "--uninstall")
                 {
                     // For scripts: the result goes to the console and the exit code, never to a message box.
-                    string problem = args[i] == "--install" ? Installer.Install(Application.ExecutablePath) : Installer.Uninstall();
+                    string problem = elevated ? NotAsAdmin
+                        : args[i] == "--install" ? Installer.Install(Application.ExecutablePath) : Installer.Uninstall(Application.ExecutablePath);
                     Console2.Use();
                     Console.WriteLine(problem ?? (args[i] == "--install" ? App.Name + " " + App.Version + " installed and started." : App.Name + " uninstalled; settings kept in " + Installer.Dir + "."));
                     return problem == null ? 0 : 1;
@@ -68,6 +75,7 @@ namespace MouseFace
                 else { Console2.Use(); Console.WriteLine(Usage); return args[i] == "--help" ? 0 : 2; }
             }
             if (watching) Console2.Use();
+            if (elevated) { Box(NotAsAdmin, true); return 5; }
 
             // Started from anywhere but its install folder (a download, a build folder), it is setup.
             if (args.Length == 0 && Installer.IsSetup(Application.ExecutablePath))

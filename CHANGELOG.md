@@ -9,7 +9,8 @@ First public release.
 - A Settings window: the mouse, each button's action, whole-name selection and dimming. Pressing a mouse button lights up its row. It saves to `settings.ini`, changing only the lines that changed, and applies at once.
 - Actions: Left, Right and Middle click, Back and Forward, Double click (with whole-name selection), Click lock, keyboard shortcuts, and Disabled.
 - Screen dimming with Shift and the wheel, off until turned on. It shows only while the chosen mouse is attached and MouseFace is not paused.
-- `MouseFace-Setup.exe` installs, updates and uninstalls itself for the current user, with no admin rights and nothing in the registry. Or build it from source with `install.cmd`.
+- `MouseFace-Setup.exe` installs, updates and uninstalls itself for the current user, with no admin rights and nothing in the registry. Or build it from source with `install.cmd`. Neither replaces a newer version with an older one, and MouseFace won't run with admin rights.
+- Its windows size themselves for each screen's scaling, including when moved to a screen scaled differently.
 - Tray menu: Pause, Reset brightness, Settings, About, Quit.
 - No polling and no network: it reacts to Windows' notifications only, and never goes online.
 - Fails to a plain mouse: a crash lets go of every held button before exiting, and an error in click handling passes the click through unchanged.

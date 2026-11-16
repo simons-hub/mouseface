@@ -19,6 +19,7 @@ namespace MouseFace
             catch (Exception) { return 1f; }
         }
 
+        internal static int Dpi { get { return (int)Math.Round(Scale * 96); } }
         internal static int S(int px) { return (int)Math.Round(px * Scale); }
         internal static Padding Pad(int all) { return new Padding(S(all)); }
         internal static Padding Pad(int left, int top, int right, int bottom) { return new Padding(S(left), S(top), S(right), S(bottom)); }
@@ -26,9 +27,129 @@ namespace MouseFace
         internal static Point Pt(int x, int y) { return new Point(S(x), S(y)); }
     }
 
-    // The Settings window, a face for settings.ini. Saving changes only the lines that changed, so
-    // notes in the file survive. Pressing a mouse button lights up its row.
-    internal sealed class SettingsForm : Form
+    // A window that keeps the right size on every screen. It is built for the main screen's scaling
+    // (Ui.S, and fonts in points), then rescaled whenever it is on a screen scaled differently: when
+    // it first appears there, and when it is moved there (Windows then sends WM_DPICHANGED).
+    internal class ScaledForm : Form
+    {
+        readonly int builtDpi = Ui.Dpi;
+        int dpi = Ui.Dpi; // what its controls are sized for now
+        List<Built> built; // every control as built, noted before the first rescale
+
+        // A control's sizes as built. Each rescale works from these, never from the last rescale, so
+        // moving a window back and forth between screens can't make it drift by rounding.
+        sealed class Built
+        {
+            internal Control Control;
+            internal Padding Margin, Padding;
+            internal Size Size, Min, Max;
+            internal Point Location;
+            internal Font Font;        // its own font, or null when it shares its parent's
+            internal bool Sized;       // its size is set, not worked out from its text
+            internal bool Placed;      // its place is set, not given by a layout panel
+        }
+
+        internal int Dpi { get { return dpi; } }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            int actual = WindowDpi();
+            if (actual > 0 && actual != dpi) RescaleTo(actual);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == Native.WM_DPICHANGED)
+            {
+                int to = (int)((long)m.WParam & 0xFFFF);
+                if (to > 0 && to != dpi) RescaleTo(to);
+                // Where Windows suggests, so a window dragged across keeps its place under the pointer.
+                Native.RECT r = (Native.RECT)System.Runtime.InteropServices.Marshal.PtrToStructure(m.LParam, typeof(Native.RECT));
+                Location = new Point(r.Left, r.Top);
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
+        int WindowDpi()
+        {
+            try { return (int)Native.GetDpiForWindow(Handle); }
+            catch (EntryPointNotFoundException) { return 0; } // Windows 10 before version 1607
+        }
+
+        // Sizes the whole window for newDpi: text, margins, padding, set sizes and set places, each
+        // from its size as built. Windows sized by their content (all of these) then fit themselves.
+        internal void RescaleTo(int newDpi)
+        {
+            if (newDpi == dpi) return;
+            if (built == null) { built = new List<Built>(); Note(this, built); }
+            dpi = newDpi;
+            float k = newDpi / (float)builtDpi;
+            SuspendLayout();
+            try
+            {
+                foreach (Built b in built)
+                {
+                    Control c = b.Control;
+                    if (b.Font != null) c.Font = new Font(b.Font.FontFamily, b.Font.Size * k, b.Font.Style, b.Font.Unit);
+                    c.Margin = Times(b.Margin, k);
+                    c.Padding = Times(b.Padding, k);
+                    c.MaximumSize = Size.Empty; // so the new minimum is never above the old maximum
+                    c.MinimumSize = Times(b.Min, k);
+                    c.MaximumSize = Times(b.Max, k);
+                    if (b.Sized) c.Size = Times(b.Size, k);
+                    if (b.Placed) c.Location = new Point((int)Math.Round(b.Location.X * k), (int)Math.Round(b.Location.Y * k));
+                }
+            }
+            finally { ResumeLayout(true); }
+            AfterRescale();
+        }
+
+        // For a window that lines controls up by their real heights, which follow the text and so
+        // don't scale exactly: line them up again.
+        protected virtual void AfterRescale() { }
+
+        static void Note(Control c, List<Built> into)
+        {
+            Built b = new Built();
+            b.Control = c;
+            b.Margin = c.Margin;
+            b.Padding = c.Padding;
+            b.Size = c.Size;
+            b.Min = c.MinimumSize;
+            b.Max = c.MaximumSize;
+            b.Location = c.Location;
+            b.Font = c.Parent == null || !ReferenceEquals(c.Font, c.Parent.Font) ? c.Font : null;
+            // A text box works out only its height from its text; its width is set. Buttons and panels
+            // that only ever grow to fit get their built size back too, or they would never shrink.
+            b.Sized = c.Parent != null && (!c.AutoSize || c is TextBoxBase || GrowsOnly(c));
+            b.Placed = c.Parent != null && c.Dock == DockStyle.None && !(c.Parent is TableLayoutPanel) && !(c.Parent is FlowLayoutPanel);
+            into.Add(b);
+            foreach (Control child in c.Controls) Note(child, into);
+        }
+
+        static bool GrowsOnly(Control c)
+        {
+            Panel p = c as Panel; // TableLayoutPanel and FlowLayoutPanel too
+            if (p != null) return p.AutoSizeMode == AutoSizeMode.GrowOnly;
+            Button b = c as Button;
+            return b != null && b.AutoSizeMode == AutoSizeMode.GrowOnly;
+        }
+
+        static Padding Times(Padding p, float k)
+        {
+            return new Padding((int)Math.Round(p.Left * k), (int)Math.Round(p.Top * k), (int)Math.Round(p.Right * k), (int)Math.Round(p.Bottom * k));
+        }
+
+        static Size Times(Size s, float k) { return new Size((int)Math.Round(s.Width * k), (int)Math.Round(s.Height * k)); }
+    }
+
+    // The Settings window, a face for settings.ini. Saving changes only the settings changed in the
+    // window, on their own lines, so notes and edits made in the file meanwhile survive. Pressing a
+    // mouse button lights up its row.
+    internal sealed class SettingsForm : ScaledForm
     {
         const int ContentWidth = 470;
         static readonly Color Pressed = Color.FromArgb(255, 230, 140), Released = Color.FromArgb(200, 235, 200);
@@ -55,6 +176,8 @@ namespace MouseFace
         readonly CheckBox popup = new CheckBox();
         readonly Control dimDetails;
         readonly Label error = new Label();
+        readonly Dictionary<string, string> shown; // each setting as the window first showed it
+        int badShortcut = -1;
 
         internal SettingsForm(Config c, Func<string, string> saveText, Action editFile)
         {
@@ -76,6 +199,7 @@ namespace MouseFace
 
             // Mouse
             TableLayoutPanel top = new TableLayoutPanel();
+            top.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             top.ColumnCount = 2;
             top.AutoSize = true;
             top.Dock = DockStyle.Fill;
@@ -158,6 +282,7 @@ namespace MouseFace
             dim.Checked = c.Dim != DimKey.Off;
             page.Controls.Add(dim);
             FlowLayoutPanel how = new FlowLayoutPanel();
+            how.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             how.AutoSize = true;
             how.WrapContents = false;
             how.Margin = Ui.Pad(20, 2, 0, 0);
@@ -191,6 +316,7 @@ namespace MouseFace
             page.Controls.Add(error);
 
             TableLayoutPanel foot = new TableLayoutPanel();
+            foot.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             foot.ColumnCount = 2;
             foot.AutoSize = true;
             foot.Dock = DockStyle.Fill; // as wide as the rows, so Save and Cancel sit at the right edge
@@ -203,6 +329,7 @@ namespace MouseFace
             file.Anchor = AnchorStyles.Left;
             file.LinkClicked += delegate { if (editFile != null) editFile(); };
             FlowLayoutPanel buttons = new FlowLayoutPanel();
+            buttons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             buttons.AutoSize = true;
             buttons.WrapContents = false;
             buttons.Margin = Ui.Pad(0);
@@ -222,6 +349,25 @@ namespace MouseFace
             Controls.Add(page);
             AutoSize = true;
             AutoSizeMode = AutoSizeMode.GrowAndShrink;
+
+            string unused;
+            shown = Values(out unused) ?? new Dictionary<string, string>();
+        }
+
+        // Each row's dropdown and shortcut box centred in it again, with the name level with the
+        // dropdown's text. (The constructor's 3 px nudge made up for the dropdown's height before the
+        // window existed; by now its height is its real one, so the same top and height line them up.)
+        protected override void AfterRescale()
+        {
+            for (int i = 0; i < 5; i++)
+            {
+                if (rows[i] == null) continue;
+                actions[i].Top = (rows[i].Height - actions[i].Height) / 2;
+                shortcuts[i].Top = (rows[i].Height - shortcuts[i].Height) / 2;
+                Control name = rows[i].Controls[0];
+                name.Top = actions[i].Top;
+                name.Height = actions[i].Height;
+            }
         }
 
         // The mice to choose from: any Evoluent, each one connected now, or all of them.
@@ -271,13 +417,13 @@ namespace MouseFace
             popup.Enabled = dim.Checked;
         }
 
-        void Save()
+        // Every setting the window shows, as settings.ini spells it, keyed "Section/Key"; or null and why.
+        Dictionary<string, string> Values(out string problem)
         {
-            string text;
-            try { text = File.Exists(SettingsFile.FilePath) ? File.ReadAllText(SettingsFile.FilePath) : Config.DefaultText; }
-            catch (Exception ex) { ShowError("Could not read " + SettingsFile.FilePath + ": " + ex.Message); return; }
-
-            text = SettingsFile.WithValue(text, "Mouse", "Match", mouseValues[mouse.SelectedIndex]);
+            problem = null;
+            badShortcut = -1;
+            Dictionary<string, string> v = new Dictionary<string, string>();
+            v["Mouse/Match"] = mouseValues[mouse.SelectedIndex];
             for (int i = 0; i < 5; i++)
             {
                 string value = ActionValues[actions[i].SelectedIndex];
@@ -286,20 +432,53 @@ namespace MouseFace
                     ushort[] keys; string canonical, why;
                     if (!KeyNames.TryParseChord(shortcuts[i].Text.Trim(), out keys, out canonical, out why))
                     {
-                        ShowError((Btn)i + ": " + why + ".");
-                        shortcuts[i].Focus();
-                        return;
+                        problem = (Btn)i + ": " + why + ".";
+                        badShortcut = i;
+                        return null;
                     }
                     value = "Keys " + canonical;
                 }
-                text = SettingsFile.WithValue(text, "Buttons", ((Btn)i).ToString(), value);
+                v["Buttons/" + (Btn)i] = value;
             }
-            text = SettingsFile.WithValue(text, "Double", "WholeName", wholeName.Checked ? "yes" : "no");
-            text = SettingsFile.WithValue(text, "Dimming", "Key", dim.Checked ? DimKeyNames[dimKey.SelectedIndex] : "Off");
-            text = SettingsFile.WithValue(text, "Dimming", "Step", ((int)step.Value).ToString());
-            text = SettingsFile.WithValue(text, "Dimming", "Popup", popup.Checked ? "yes" : "no");
+            v["Double/WholeName"] = wholeName.Checked ? "yes" : "no";
+            v["Dimming/Key"] = dim.Checked ? DimKeyNames[dimKey.SelectedIndex] : "Off";
+            v["Dimming/Step"] = ((int)step.Value).ToString();
+            v["Dimming/Popup"] = popup.Checked ? "yes" : "no";
+            return v;
+        }
 
-            string problem = save(text);
+        // The file's text with only the settings that changed in the window written over it. Anything
+        // else, including edits made in the file while the window was open, is left as it is.
+        internal static string WithChanges(string text, Dictionary<string, string> shown, Dictionary<string, string> now)
+        {
+            foreach (KeyValuePair<string, string> s in now)
+            {
+                string was;
+                if (shown.TryGetValue(s.Key, out was) && was == s.Value) continue;
+                int slash = s.Key.IndexOf('/');
+                text = SettingsFile.WithValue(text, s.Key.Substring(0, slash), s.Key.Substring(slash + 1), s.Value);
+            }
+            return text;
+        }
+
+        void Save()
+        {
+            string problem;
+            Dictionary<string, string> now = Values(out problem);
+            if (now == null)
+            {
+                ShowError(problem);
+                if (badShortcut >= 0) shortcuts[badShortcut].Focus();
+                return;
+            }
+
+            string text;
+            try { text = File.Exists(SettingsFile.FilePath) ? File.ReadAllText(SettingsFile.FilePath) : Config.DefaultText; }
+            catch (Exception ex) { ShowError("Could not read " + SettingsFile.FilePath + ": " + ex.Message); return; }
+            string changed = WithChanges(text, shown, now);
+            if (changed == text && File.Exists(SettingsFile.FilePath)) { Close(); return; } // nothing to save
+
+            problem = save(changed);
             if (problem != null) { ShowError(problem); return; }
             Close();
         }
@@ -368,6 +547,7 @@ namespace MouseFace
             Button b = new Button();
             b.Text = text;
             b.AutoSize = true;
+            b.AutoSizeMode = AutoSizeMode.GrowAndShrink; // so it shrinks back on a screen scaled smaller
             b.MinimumSize = Ui.Sz(88, 0);
             b.Padding = Ui.Pad(8, 2, 8, 2);
             b.Margin = Ui.Pad(8, 0, 0, 0);
@@ -377,7 +557,7 @@ namespace MouseFace
 
     // About: what this is, its version and licence, and where to find the newest one. It never goes
     // online itself; the links open in the browser.
-    internal sealed class AboutForm : Form
+    internal sealed class AboutForm : ScaledForm
     {
         internal AboutForm()
         {
@@ -548,7 +728,7 @@ namespace MouseFace
 
     // A short note that shows for a moment below a control and goes away by itself. It never takes
     // the focus, so it stays up even when another window is in front.
-    internal sealed class Toast : Form
+    internal sealed class Toast : ScaledForm
     {
         readonly Timer timer = new Timer();
 

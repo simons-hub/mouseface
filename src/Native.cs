@@ -47,6 +47,8 @@ namespace MouseFace
         internal const uint MB_ICONINFORMATION = 0x40, MB_ICONWARNING = 0x30, MB_SETFOREGROUND = 0x10000, MB_TOPMOST = 0x40000;
 
         [StructLayout(LayoutKind.Sequential)] internal struct POINT { public int x, y; }
+        [StructLayout(LayoutKind.Sequential)] internal struct RECT { public int Left, Top, Right, Bottom; }
+        internal const int WM_DPICHANGED = 0x02E0;
         [StructLayout(LayoutKind.Sequential)]
         internal struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam, lParam; public uint time; public POINT pt; public uint lPrivate; }
         [StructLayout(LayoutKind.Sequential)]
@@ -94,6 +96,7 @@ namespace MouseFace
         [DllImport("user32.dll")] internal static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
         [DllImport("shcore.dll")] internal static extern int GetDpiForMonitor(IntPtr monitor, int type, out uint dpiX, out uint dpiY);
         [DllImport("user32.dll")] internal static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+        [DllImport("user32.dll")] internal static extern uint GetDpiForWindow(IntPtr hwnd);
         [DllImport("user32.dll")] internal static extern bool GetCursorPos(out POINT pt);
         [DllImport("user32.dll")] internal static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] internal static extern IntPtr WindowFromPoint(POINT pt);
