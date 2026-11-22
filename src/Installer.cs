@@ -486,7 +486,7 @@ namespace MouseFace
             body.AutoSize = true;
             body.MaximumSize = Ui.Sz(400, 0);
             body.Text = installed == null
-                ? "It installs for you only, needs no admin rights, and starts when you sign in. "
+                ? "It's set up just for you on this PC, and starts by itself whenever you sign in to Windows. "
                     + (File.Exists(Path.Combine(Installer.Dir, "settings.ini")) ? "Your settings from before are kept." : "Its Settings window opens once it is installed.")
                 : newerInstalled ? "This setup is the older version " + App.Version + ". To use it instead, uninstall " + installed
                     + " first, then run this again. Your settings are kept."

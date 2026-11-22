@@ -6,7 +6,7 @@ Remap your Evoluent mouse's buttons and dim your screens on Windows 10 and 11, w
 
 - **Remap buttons**: single and double clicks, keyboard shortcuts, click lock, or disable.
 - **Dim the screens** by holding Shift and turning the wheel. Off until you turn it on.
-- **No driver, no admin rights, no network.** One small program: download it, or build from the source on your own machine.
+- **No driver, no administrator permission, no network.** One small program: download it, or build from the source on your own machine.
 
 MouseFace is not affiliated with or endorsed by Evoluent LLC. Evoluent and VerticalMouse are trademarks of their owners.
 
@@ -22,7 +22,7 @@ First uninstall other mouse software (Evoluent Mouse Manager or X-Mouse Button C
 
 1. Download `MouseFace-Setup.exe` from the [latest release](https://github.com/simons-hub/mouseface/releases/latest).
 2. Double-click it. It isn't code-signed yet, so Windows may say "Windows protected your PC": choose **More info**, then **Run anyway**. If it says Smart App Control blocked it, see [If Windows blocks it](#if-windows-blocks-it).
-3. Choose **Install**. It installs for you only and needs no admin rights. (Don't use **Run as administrator**: with User Account Control on, as Windows has it by default, MouseFace refuses to run that way.)
+3. Choose **Install**. It's set up just for you on this PC and needs no administrator permission. (Don't use **Run as administrator**: with User Account Control on, as Windows has it by default, MouseFace refuses to run that way.)
 4. The first time, the Settings window opens: choose what each button does, then **Save**.
 
 Each release lists the file's SHA-256 and carries GitHub's build attestation, which shows it was built from this repository's source.

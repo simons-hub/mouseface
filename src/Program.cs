@@ -44,8 +44,8 @@ namespace MouseFace
             + "Settings: settings.ini in %LOCALAPPDATA%\\" + App.Name + " (tray menu > Settings).";
         internal const string QuitEventName = @"Local\" + App.Name + ".quit";
 
-        const string NotAsAdmin = App.Name + " doesn't run with admin rights, so it did not start. "
-            + "Start it normally, not with Run as administrator.";
+        const string NotAsAdmin = App.Name + " didn't start because it was opened with Run as administrator, which it doesn't need. "
+            + "Open it the normal way instead.";
         static string UninstalledText { get { return App.Name + " is uninstalled. Your settings are still in " + Installer.Dir + "; delete that folder to remove them too."; } }
 
         [STAThread]

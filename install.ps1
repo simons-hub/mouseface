@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Builds, tests and installs MouseFace for the current user. Needs no admin rights and downloads
+  Builds, tests and installs MouseFace for the current user. Needs no administrator permission and downloads
   nothing.
 
 .DESCRIPTION
@@ -162,7 +162,7 @@ function Stop-Running {
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $uacOn = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA -ErrorAction SilentlyContinue).EnableLUA -ne 0
 if (-not $UnitOnly -and $uacOn -and $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    $text = "This window has admin rights, which $AppName doesn't use. Run this again from a normal window (not Run as administrator)."
+    $text = "This window was opened with Run as administrator, which $AppName doesn't need. Run this again from a normal window."
     Write-Host $text
     if (-not $Quiet) { Show-Box $text }
     exit 1
