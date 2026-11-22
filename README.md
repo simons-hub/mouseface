@@ -21,11 +21,17 @@ First uninstall other mouse software (Evoluent Mouse Manager or X-Mouse Button C
 ### Download and run
 
 1. Download `MouseFace-Setup.exe` from the [latest release](https://github.com/simons-hub/mouseface/releases/latest).
-2. Double-click it. It isn't code-signed yet, so Windows may say "Windows protected your PC": choose **More info**, then **Run anyway**.
+2. Double-click it. It isn't code-signed yet, so Windows may say "Windows protected your PC": choose **More info**, then **Run anyway**. If it says Smart App Control blocked it, see [If Windows blocks it](#if-windows-blocks-it).
 3. Choose **Install**. It installs for you only and needs no admin rights. (Don't use **Run as administrator**: with User Account Control on, as Windows has it by default, MouseFace refuses to run that way.)
 4. The first time, the Settings window opens: choose what each button does, then **Save**.
 
 Each release lists the file's SHA-256 and carries GitHub's build attestation, which shows it was built from this repository's source.
+
+### If Windows blocks it
+
+Smart App Control, which is on by default on some new Windows 11 PCs, runs only apps that Microsoft already knows or that are code-signed, and it has no **Run anyway**. MouseFace isn't signed yet, so on those PCs Windows blocks the download, or setup says Windows stopped MouseFace from starting. Building it yourself doesn't get round it, as the program it builds isn't signed either.
+
+To check, open Windows Security > App & browser control > Smart App Control settings. To use MouseFace on that PC, turn Smart App Control off, then run setup again. That lowers the PC's protection against unknown apps. On some PCs it can't be turned back on without resetting Windows; where it can, expect it to block MouseFace again.
 
 ### Or build it yourself
 

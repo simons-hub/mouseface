@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
@@ -547,8 +548,92 @@ namespace MouseFace.Tests
                 Mark(installed);
                 Installer.Place(download, dir);
                 Check("updating drops a mark the old installed copy had", File.Exists(installed) && !HasMark(installed));
+
+                // An install that fails (Windows wouldn't start the new copy) puts back what was there.
+                string fresh = Path.Combine(home, "fresh"), freshExe = Path.Combine(fresh, App.Name + ".exe");
+                string[] links = { startup, menu };
+                Installer.Place(Assembly.GetExecutingAssembly().Location, dir, menu); // a shortcut that was there before, to another copy
+                byte[] menuBefore = File.ReadAllBytes(menu);
+                Installer.Place(Assembly.GetExecutingAssembly().Location, fresh, startup, menu);
+                Check("(setup rewrites a shortcut that was there)", Convert.ToBase64String(File.ReadAllBytes(menu)) != Convert.ToBase64String(menuBefore));
+                string undone = Installer.PutBack(fresh, true, false, links, new byte[][] { null, menuBefore });
+                Check("a failed first install removes the program and the shortcut it made", undone == null && !File.Exists(freshExe) && !File.Exists(startup));
+                Check("  ...and gives a shortcut that was there before its old contents back",
+                    File.Exists(menu) && Convert.ToBase64String(File.ReadAllBytes(menu)) == Convert.ToBase64String(menuBefore));
+                Check("  ...and removes its folder, which it made and is now empty", !Directory.Exists(fresh));
+                Installer.Place(Assembly.GetExecutingAssembly().Location, fresh);
+                File.WriteAllText(Path.Combine(fresh, "settings.ini"), "[Mouse]");
+                Installer.PutBack(fresh, true, false, new string[0], new byte[0][]);
+                Check("  ...but keeps the folder, and settings.ini, when that is in it", !File.Exists(freshExe) && File.Exists(Path.Combine(fresh, "settings.ini")));
+                File.Delete(Path.Combine(fresh, "settings.ini"));
+                Installer.Place(Assembly.GetExecutingAssembly().Location, fresh);
+                Installer.PutBack(fresh, true, true, new string[0], new byte[0][]);
+                Check("  ...and a folder that was there before, even empty", !File.Exists(freshExe) && Directory.Exists(fresh));
+                Installer.Place(Assembly.GetExecutingAssembly().Location, fresh, startup);
+                Installer.PutBack(fresh, false, true, new string[] { startup }, new byte[][] { null });
+                Check("a failed update keeps the program (the copy put back) and removes a shortcut it made",
+                    File.Exists(freshExe) && !File.Exists(startup));
+                using (FileStream held = new FileStream(startup, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+                {
+                    string stuck = Installer.PutBack(fresh, true, true, new string[] { startup }, new byte[][] { null });
+                    Check("  ...and returns what it could not delete", stuck == startup);
+                }
+                File.Delete(startup);
+
+                // End to end: the whole install, given a "program" Windows won't start (as when Smart App
+                // Control blocks it, the start throws), in folders of the test's own. Nothing here touches
+                // the real install, its shortcuts, its Installed apps entry or a running MouseFace.
+                string stand = Path.Combine(home, "not-a-program.exe");
+                File.WriteAllText(stand, "a stand-in setup whose installed copy Windows can't start, as when a rule blocks it");
+                string e2e = Path.Combine(home, "e2e"), e2eExe = Path.Combine(e2e, App.Name + ".exe"), e2eIni = Path.Combine(e2e, "settings.ini");
+                string s2 = Path.Combine(home, "Startup2", App.Name + ".lnk"), m2 = Path.Combine(home, "Programs2", App.Name + ".lnk");
+                bool e2eListed = false;
+                Func<string> register = delegate { e2eListed = true; return null; };
+                string said = Installer.Install(stand, e2e, s2, m2, false, register);
+                Check("end to end: a first install Windows won't start says why, and that nothing was installed",
+                    said != null && said.StartsWith("Could not install: ") && said.EndsWith(". Nothing was installed."));
+                Check("  ...and leaves no program, no shortcut, no folder and no Installed apps entry",
+                    !File.Exists(e2eExe) && !File.Exists(s2) && !File.Exists(m2) && !Directory.Exists(e2e) && !e2eListed);
+                Directory.CreateDirectory(e2e);
+                File.WriteAllText(e2eIni, "[Mouse]");
+                Installer.Place(Assembly.GetExecutingAssembly().Location, dir, m2); // a Start menu shortcut there before
+                byte[] m2Before = File.ReadAllBytes(m2);
+                said = Installer.Install(stand, e2e, s2, m2, false, register);
+                Check("  ...after an uninstall that kept settings.ini: keeps it and its folder, removes the program and the new shortcut",
+                    File.Exists(e2eIni) && !File.Exists(e2eExe) && !File.Exists(s2) && said.EndsWith(". Nothing was installed."));
+                Check("  ...and gives a shortcut that was there before its old contents back",
+                    Convert.ToBase64String(File.ReadAllBytes(m2)) == Convert.ToBase64String(m2Before));
+                File.WriteAllText(e2eExe, "the copy you had");
+                said = Installer.Install(stand, e2e, s2, m2, false, register);
+                Check("end to end: an update Windows won't start puts back the copy you had, and says so",
+                    File.ReadAllText(e2eExe) == "the copy you had" && !File.Exists(e2eExe + Installer.Kept) && said.EndsWith(". The copy you had is back in place."));
+                Check("  ...removes the shortcut it made, keeps settings.ini, and is not listed",
+                    !File.Exists(s2) && File.Exists(m2) && File.Exists(e2eIni) && !e2eListed);
             }
             finally { try { Directory.Delete(home, true); } catch (Exception) { } }
+            // What setup says when Windows won't start the copy it installed.
+            Win32Exception blocked = new Win32Exception(4551);
+            string sac = Installer.Problem(blocked, true, "Nothing was installed.");
+            Check("a copy Smart App Control blocks: setup says so, and that nothing was installed, and no more",
+                sac == "Windows' Smart App Control stopped MouseFace from starting. It runs only apps that Microsoft already knows "
+                    + "or that are code-signed, and this release of MouseFace isn't signed yet. Nothing was installed.");
+            string rule = Installer.Problem(new Win32Exception(1260), true, null);
+            Check("  ...an AppLocker block is not blamed on Smart App Control, even while that is on", !rule.Contains("Smart App Control") && rule.Contains("administrator"));
+            Check("  ...nor is a block while Smart App Control is off", !Installer.Problem(blocked, false, null).Contains("Smart App Control"));
+            Check("  ...which closes with Windows' words, with one full stop and single spaces",
+                Installer.Problem(new Win32Exception(4556), false, null).EndsWith("this file. Malicious binary reputation.\")"));
+            Check("the app control blocks count", Installer.Blocked(1260) && Installer.Blocked(4551) && Installer.Blocked(4556) && Installer.Blocked(4559)
+                && Installer.Blocked(4580) && Installer.Blocked(4582));
+            Check("  ...the codes beside them don't (policy errors, Virtual Secure Mode, a driver check)", !Installer.Blocked(4552) && !Installer.Blocked(4555)
+                && !Installer.Blocked(4560) && !Installer.Blocked(4579) && !Installer.Blocked(4583) && !Installer.Blocked(5));
+            Check("any other failure keeps Windows' words, ending them with a full stop, then what was left",
+                Installer.Problem(new Win32Exception(5), true, "Nothing was installed.") == "Could not install: Access is denied. Nothing was installed.");
+            Check("what a failed first install says", Installer.Outcome(true, false, true, null) == "Nothing was installed.");
+            Check("  ...or what it couldn't delete", Installer.Outcome(true, false, false, @"C:\x\MouseFace.lnk") == @"Delete what it left by hand: C:\x\MouseFace.lnk.");
+            Check("a failed update says the copy is back", Installer.Outcome(false, true, false, null) == "The copy you had is back in place.");
+            Check("  ...and, when Windows blocked it, how to remove that copy if it is blocked too", Installer.Outcome(false, true, true, null).Contains("choose Uninstall"));
+            Check("  ...and nothing when there was nothing to put back", Installer.Outcome(false, false, false, null) == null);
+            Installer.SmartAppControlOn(); // reads, never throws
             Check("a copy outside the install folder is setup", Installer.IsSetup(Path.Combine(home, App.Name + ".exe")));
             Check("the installed copy is not setup", !Installer.IsSetup(Installer.Exe.ToUpperInvariant()));
             // The entry in Settings > Apps > Installed apps (built here, never written by the tests).

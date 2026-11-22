@@ -261,10 +261,15 @@ $firstRun = -not (Test-Path -LiteralPath (Join-Path $appDir 'settings.ini'))
 # The copy in place is kept aside until the new one has started, and put back if anything fails.
 $kept = "$appExe.old"
 $moved = $false # only a copy this run moved aside is ever put back, never an older leftover
+# A first install that fails takes its program away again, so a later setup doesn't take it for an
+# installed copy to update. Only a program this run placed, where there was none, is ever deleted.
+$hadExe = Test-Path -LiteralPath $appExe
+$placed = $false
 try {
     Copy-Item -LiteralPath $built.App -Destination "$appExe.new" -Force
     if (Test-Path -LiteralPath $appExe) { Move-Item -LiteralPath $appExe -Destination $kept -Force; $moved = $true }
     Move-Item -LiteralPath "$appExe.new" -Destination $appExe -Force
+    $placed = $true
     Remove-Item -LiteralPath $asideExe -ErrorAction SilentlyContinue
     # Started from its own folder, like the shortcuts do: a program keeps its working folder in use,
     # and this folder may be the download you want to delete afterwards.
@@ -294,6 +299,13 @@ try {
             Move-Item -LiteralPath $kept -Destination $appExe -Force
             Write-Host "The $AppName you had is back in place."
         } catch { Write-Warning "Could not put back the $AppName you had ($($_.Exception.Message)); it is in $kept." }
+    } elseif ($placed -and -not $hadExe) {
+        try {
+            # The new copy, if it got as far as starting (one Windows blocked never did, and can't be asked to quit).
+            if (Get-Running | Where-Object { $_.Path -eq $appExe }) { Stop-Running }
+            Remove-Item -LiteralPath $appExe -Force
+            Write-Host "Nothing was installed."
+        } catch { Write-Warning "Could not remove the $AppName this left in $appExe ($($_.Exception.Message)); delete it by hand." }
     }
     Restart-Previous
     throw $failure
