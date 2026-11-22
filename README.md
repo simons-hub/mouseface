@@ -50,7 +50,7 @@ MouseFace runs in the background, with its icon in the notification area by the 
 
 **To update,** run the newer `MouseFace-Setup.exe` or `install.cmd`; your settings are kept. Setup never replaces a newer version with an older one: to go back, uninstall first.
 
-**To uninstall,** find MouseFace in Settings > Apps > Installed apps (Apps & features on Windows 10) and choose **Uninstall**. Running `MouseFace-Setup.exe` again, or `install.cmd -Uninstall`, also uninstalls it. Your settings stay in `%LOCALAPPDATA%\MouseFace`; delete that folder to remove them too. The Installed apps entry is the only thing MouseFace writes to the registry, and it is under your account.
+**To uninstall,** find MouseFace in Settings > Apps > Installed apps (Apps & features on Windows 10) and choose **Uninstall**. Running `MouseFace-Setup.exe` again and choosing **Uninstall** does the same. Either way it asks whether to **Also delete my settings**; unless you tick that, they stay in `%LOCALAPPDATA%\MouseFace` in case you install it again. `install.cmd -Uninstall` keeps them; delete that folder to remove them too. The Installed apps entry is the only thing MouseFace writes to the registry, and it is under your account.
 
 ### From a script or an AI agent
 

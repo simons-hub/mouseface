@@ -103,6 +103,19 @@ namespace MouseFace
         [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
         [DllImport("user32.dll")] internal static extern int GetSystemMetrics(int index);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern int MessageBox(IntPtr hwnd, string text, string caption, uint type);
+        // Windows' own icons (the current ones, as its message boxes show), at any size: where each one
+        // lives, then that icon drawn at the size asked for.
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        internal struct SHSTOCKICONINFO
+        {
+            internal uint cbSize;
+            internal IntPtr hIcon;
+            internal int iSysImageIndex, iIcon;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] internal string szPath;
+        }
+        internal const int SIID_HELP = 23, SIID_WARNING = 78, SIID_INFO = 79;
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)] internal static extern int SHGetStockIconInfo(int siid, uint flags, ref SHSTOCKICONINFO info);
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)] internal static extern int SHDefExtractIcon(string file, int index, uint flags, out IntPtr large, out IntPtr small, uint sizes);
         [DllImport("user32.dll", SetLastError = true)] internal static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
         [DllImport("user32.dll")] internal static extern bool CloseDesktop(IntPtr desktop);
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern bool GetUserObjectInformation(IntPtr obj, int index, StringBuilder info, uint length, out uint needed);

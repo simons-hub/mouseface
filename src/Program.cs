@@ -46,7 +46,6 @@ namespace MouseFace
 
         const string NotAsAdmin = App.Name + " didn't start because it was opened with Run as administrator, which it doesn't need. "
             + "Open it the normal way instead.";
-        static string UninstalledText { get { return App.Name + " is uninstalled. Your settings are still in " + Installer.Dir + "; delete that folder to remove them too."; } }
 
         [STAThread]
         static int Main(string[] args)
@@ -62,7 +61,7 @@ namespace MouseFace
                 {
                     // For scripts: the result goes to the console and the exit code, never to a message box.
                     string problem = elevated ? NotAsAdmin
-                        : args[i] == "--install" ? Installer.Install(App.ExePath) : Installer.Uninstall(App.ExePath);
+                        : args[i] == "--install" ? Installer.Install(App.ExePath) : Installer.Uninstall(App.ExePath, false);
                     Console2.Use();
                     Console.WriteLine(problem ?? (args[i] == "--install" ? App.Name + " " + App.Version + " installed and started." : App.Name + " uninstalled; settings kept in " + Installer.Dir + "."));
                     return problem == null ? 0 : 1;
@@ -80,11 +79,10 @@ namespace MouseFace
                     // Uninstall in Settings > Apps > Installed apps: ask first, then say how it went.
                     if (elevated) { Box(NotAsAdmin, true); return 5; }
                     Application.EnableVisualStyles();
-                    if (MessageBox.Show("Uninstall " + App.Name + "? Your settings are kept.", App.Name,
-                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return 1;
-                    string problem = Installer.Uninstall(App.ExePath);
-                    MessageBox.Show(problem ?? UninstalledText, App.Name, MessageBoxButtons.OK,
-                        problem == null ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                    bool deleteSettings;
+                    if (!MessageForm.Ask(null, App.Name, "Uninstall " + App.Name + "?", "Uninstall", "Cancel", Installer.DeleteSettingsText, out deleteSettings)) return 1;
+                    string problem = Installer.Uninstall(App.ExePath, deleteSettings);
+                    MessageForm.Tell(null, App.Name, problem ?? Installer.UninstalledText(deleteSettings), problem != null);
                     return problem == null ? 0 : 1;
                 }
                 else if (args[i] == "--quit")

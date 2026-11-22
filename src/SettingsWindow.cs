@@ -688,7 +688,7 @@ namespace MouseFace
             l.LinkClicked += delegate
             {
                 try { Process.Start(url); }
-                catch (Exception ex) { MessageBox.Show("Could not open " + url + ": " + ex.Message, App.Name); }
+                catch (Exception ex) { MessageForm.Tell(l.FindForm(), App.Name, "Could not open " + url + ": " + ex.Message, true); }
             };
             return l;
         }

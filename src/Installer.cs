@@ -250,9 +250,19 @@ namespace MouseFace
         static Process Start() { return Start(Exe, Dir); }
         static Process Start(string exe, string dir) { return Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = dir, UseShellExecute = true }); }
 
-        // Removes the program, its shortcuts and its Installed apps entry, keeping settings.ini and the
-        // log. Returns why not, or null. Installed apps runs the installed copy itself to do this.
-        internal static string Uninstall(string self)
+        // The tick box when asked to uninstall: not ticked, so a reinstall (the usual fix) keeps the layout.
+        internal const string DeleteSettingsText = "Also delete my settings";
+
+        // What the windows say once it is uninstalled.
+        internal static string UninstalledText(bool settingsDeleted)
+        {
+            return App.Name + " uninstalled successfully." + (settingsDeleted ? "" : " Your settings are kept in case you install it again.");
+        }
+
+        // Removes the program, its shortcuts and its Installed apps entry, and with deleteSettings its
+        // folder too: settings.ini, the saved brightness and the log. Returns why not, or null. Installed
+        // apps runs the installed copy itself to do this.
+        internal static string Uninstall(string self, bool deleteSettings)
         {
             bool wasRunning;
             if (!QuitRunning(out wasRunning)) return "The running " + App.Name + " did not close. Quit it from its tray icon, then try again.";
@@ -270,7 +280,37 @@ namespace MouseFace
             if (left != null) problems.Add("could not delete " + left + " (delete it by hand)");
             try { Unregister(); }
             catch (Exception ex) { problems.Add("could not remove its entry from Installed apps (" + ex.Message + ")"); }
+            if (deleteSettings)
+            {
+                string stuck = DeleteData(Dir);
+                if (stuck != null) problems.Add("could not delete " + stuck + " (delete it by hand)");
+            }
             return problems.Count == 0 ? null : App.Name + " is uninstalled, but " + string.Join(", and ", problems.ToArray()) + ".";
+        }
+
+        // Deletes the folder settings.ini, the saved brightness and the log live in, as far as it can.
+        // A program an uninstall renamed where it was (when the temp folder is on another drive) is still
+        // running, and stays for the next install to delete; it is not counted. Returns what could not be
+        // deleted, or null.
+        internal static string DeleteData(string dir)
+        {
+            if (!Directory.Exists(dir)) return null;
+            // This process may be working in that folder (Installed apps starts it there), which would
+            // keep the folder itself from going.
+            try { Environment.CurrentDirectory = Path.GetTempPath(); } catch (Exception) { }
+            List<string> left = new List<string>();
+            foreach (string file in Directory.GetFiles(dir))
+            {
+                try { File.SetAttributes(file, FileAttributes.Normal); File.Delete(file); }
+                catch (Exception) { if (!file.EndsWith(Aside, StringComparison.OrdinalIgnoreCase)) left.Add(file); }
+            }
+            foreach (string sub in Directory.GetDirectories(dir))
+            {
+                try { Directory.Delete(sub, true); }
+                catch (Exception) { left.Add(sub); }
+            }
+            try { Directory.Delete(dir); } catch (Exception) { } // not while a renamed program is in it
+            return left.Count == 0 ? null : string.Join(", ", left.ToArray());
         }
 
         // ---- the entry in Settings > Apps > Installed apps --------------------------------------------
@@ -513,8 +553,9 @@ namespace MouseFace
                 Button remove = SettingsForm.DialogButton("Uninstall");
                 remove.Click += delegate
                 {
-                    Run(Installer.Uninstall(self), App.Name + " is uninstalled. Your settings are still in " + Installer.Dir
-                        + "; delete that folder to remove them too.");
+                    bool deleteSettings;
+                    if (!MessageForm.Ask(this, Text, "Uninstall " + App.Name + "?", "Uninstall", "Cancel", Installer.DeleteSettingsText, out deleteSettings)) return;
+                    Run(Installer.Uninstall(self, deleteSettings), Installer.UninstalledText(deleteSettings));
                 };
                 buttons.Controls.Add(remove);
             }
@@ -532,8 +573,8 @@ namespace MouseFace
 
         void Run(string problem, string done)
         {
-            if (problem != null) { MessageBox.Show(this, problem, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-            if (done != null) MessageBox.Show(this, done, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (problem != null) { MessageForm.Tell(this, Text, problem, true); return; }
+            if (done != null) MessageForm.Tell(this, Text, done, false);
             Close();
         }
     }

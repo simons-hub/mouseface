@@ -609,8 +609,34 @@ namespace MouseFace.Tests
                     File.ReadAllText(e2eExe) == "the copy you had" && !File.Exists(e2eExe + Installer.Kept) && said.EndsWith(". The copy you had is back in place."));
                 Check("  ...removes the shortcut it made, keeps settings.ini, and is not listed",
                     !File.Exists(s2) && File.Exists(m2) && File.Exists(e2eIni) && !e2eListed);
+
+                // Uninstall with "Also delete my settings" ticked: the folder goes, settings, log and all.
+                string data = Path.Combine(home, "data");
+                Directory.CreateDirectory(Path.Combine(data, "sub"));
+                File.WriteAllText(Path.Combine(data, "settings.ini"), "[Mouse]");
+                File.WriteAllText(Path.Combine(data, "brightness.txt"), "70");
+                File.WriteAllText(Path.Combine(data, App.Name + ".log"), "a log");
+                File.SetAttributes(Path.Combine(data, "settings.ini"), FileAttributes.ReadOnly);
+                string cwd = Environment.CurrentDirectory;
+                Environment.CurrentDirectory = data; // as when Installed apps starts the uninstall in it
+                string notGone = Installer.DeleteData(data);
+                Check("deleting the settings deletes the whole folder, a read-only settings.ini and the folder it is working in too",
+                    notGone == null && !Directory.Exists(data));
+                Environment.CurrentDirectory = cwd;
+                Directory.CreateDirectory(data);
+                string renamed = Path.Combine(data, App.Name + ".exe" + Installer.Aside), open = Path.Combine(data, "settings.ini");
+                File.WriteAllText(renamed, "a program an uninstall renamed where it was, still running");
+                File.WriteAllText(open, "[Mouse]");
+                using (new FileStream(renamed, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (new FileStream(open, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    notGone = Installer.DeleteData(data);
+                Check("  ...and names what it could not delete, but not a renamed program still running", notGone == open);
+                Check("  ...and is fine when the folder is already gone", Installer.DeleteData(Path.Combine(home, "never")) == null);
             }
             finally { try { Directory.Delete(home, true); } catch (Exception) { } }
+            Check("uninstalled: says so, and that the settings are kept",
+                Installer.UninstalledText(false) == "MouseFace uninstalled successfully. Your settings are kept in case you install it again.");
+            Check("  ...or just says so when they were deleted too", Installer.UninstalledText(true) == "MouseFace uninstalled successfully.");
             // What setup says when Windows won't start the copy it installed.
             Win32Exception blocked = new Win32Exception(4551);
             string sac = Installer.Problem(blocked, true, "Nothing was installed.");
