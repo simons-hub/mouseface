@@ -67,7 +67,10 @@ namespace MouseFace
         // other's new copy for one that failed. Runs step and returns what it does, or says to wait.
         internal static string OneAtATime(Func<string> step)
         {
-            using (Mutex one = new Mutex(false, @"Local\" + App.Name + ".setup"))
+            Mutex one;
+            try { one = new Mutex(false, @"Local\" + App.Name + ".setup"); }
+            catch (UnauthorizedAccessException) { return Busy; } // another account's setup in this sign-in has it
+            using (one)
             {
                 try { if (!one.WaitOne(0)) return Busy; }
                 catch (AbandonedMutexException) { } // a setup that ended without letting go: this one has it now
@@ -248,7 +251,7 @@ namespace MouseFace
             {
                 // The new copy is where it was, and the shortcuts start it.
                 parts.Add("The copy that was there couldn't be put back; it is saved as " + stranded + ".");
-                parts.Add("If the new copy doesn't start when you sign in, run this again and choose Uninstall to remove it.");
+                parts.Add("If the new copy doesn't start when you sign in, run this again and choose Uninstall, which removes it and the saved copy.");
             }
             else if (back || (!first && !moved))
             {
@@ -262,8 +265,13 @@ namespace MouseFace
             return parts.Count == 0 ? null : string.Join(" ", parts.ToArray());
         }
 
-        // Ends Windows' words (or ours) with one full stop: .NET drops the one Windows has.
-        internal static string Sentence(string text) { return text.Trim().TrimEnd('.') + "."; }
+        // Ends Windows' words (or ours) with one full stop: .NET drops the one Windows has. Chinese and
+        // Japanese words keep their own full stop (U+3002), with none added.
+        internal static string Sentence(string text)
+        {
+            string t = text.Trim();
+            return t.EndsWith("。", StringComparison.Ordinal) ? t : t.TrimEnd('.') + ".";
+        }
 
         static bool IsBlock(Exception ex)
         {
@@ -378,7 +386,12 @@ namespace MouseFace
             // The program is gone, so its entry goes too, whatever else is left.
             List<string> problems = new List<string>();
             try { Unregister(); }
-            catch (Exception ex) { problems.Add("couldn't remove its entry from Installed apps (" + ex.Message.Trim().TrimEnd('.') + ")"); }
+            catch (Exception ex)
+            {
+                // Why, in Windows' words about a registry key, is for the log.
+                Log.Write("could not remove the Installed apps entry: " + ex.Message);
+                problems.Add("couldn't remove its entry from Installed apps");
+            }
             if (deleteSettings)
             {
                 string stuck = DeleteData(Dir);
@@ -484,6 +497,7 @@ namespace MouseFace
                 string fresh = exe + Fresh;
                 try
                 {
+                    Delete(fresh); // one an earlier run left, even a read-only one
                     File.WriteAllBytes(fresh, File.ReadAllBytes(self));
                     Retry(delegate { if (!Native.MoveFileEx(fresh, exe, Native.MOVEFILE_REPLACE_EXISTING)) throw new Win32Exception(); });
                 }
@@ -586,23 +600,27 @@ namespace MouseFace
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             Native.IShellLinkW link = (Native.IShellLinkW)new Native.ShellLink();
+            System.Runtime.InteropServices.ComTypes.IPersistFile file = (System.Runtime.InteropServices.ComTypes.IPersistFile)link;
             try
             {
+                // An update keeps what you set on the shortcut yourself (a shortcut key, Run minimized, an
+                // icon), as 1.0.0 did: the one there is read first, when it can be.
+                if (File.Exists(path)) { try { file.Load(path, 0); } catch (Exception) { } }
                 link.SetPath(target);
                 link.SetWorkingDirectory(workingDir);
                 link.SetDescription(App.Name + ": mouse button remapper and screen dimmer");
-                ((System.Runtime.InteropServices.ComTypes.IPersistFile)link).Save(path, true);
+                file.Save(path, true);
             }
-            catch (Exception ex) { throw new IOException("Windows couldn't save the shortcut " + path + ". " + WindowsWords(ex), ex); }
+            catch (Exception ex) { throw new IOException("Windows couldn't save the shortcut " + path + ". " + Sentence(WindowsWords(ex)), ex); }
             finally { Marshal.FinalReleaseComObject(link); }
         }
 
-        // An error in Windows' own words: .NET ends a COM call's with "(Exception from HRESULT: 0x80070005
+        // A COM call's error in Windows' own words, never .NET's "(Exception from HRESULT: 0x80070005
         // (E_ACCESSDENIED))", which says nothing to a person.
         static string WindowsWords(Exception ex)
         {
             uint code = unchecked((uint)ex.HResult);
-            return (code & 0xFFFF0000u) == 0x80070000u ? new Win32Exception((int)(code & 0xFFFFu)).Message : ex.Message;
+            return new Win32Exception((code & 0xFFFF0000u) == 0x80070000u ? (int)(code & 0xFFFFu) : unchecked((int)code)).Message;
         }
     }
 

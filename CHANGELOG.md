@@ -8,7 +8,7 @@
 - Uninstalling from Installed apps or from setup asks whether to also delete your settings (settings.ini, the saved brightness and the log). They are kept unless you tick it.
 - The uninstall question, and setup's messages about how it went, show in MouseFace's own window, in larger text than Windows' standard message box, with Windows' current icons. Ctrl+C copies a message.
 - An update that fails, and can't put the copy that was there back, says where that copy is saved, and a later update never writes over it. If setup couldn't list MouseFace in Installed apps, it says so after "MouseFace installed successfully.", with how to uninstall it later.
-- Setup and install.cmd now work for a user whose name has letters outside the PC's language, like a Polish name on a PC set to English. 1.0.0 couldn't make its shortcuts for them, and said only "Exception has been thrown by the target of an invocation."
+- Setup and install.cmd now work for a user whose name has letters outside the PC's language, like a Polish name on a PC set to English. 1.0.0 couldn't make their shortcuts, and setup said only "Exception has been thrown by the target of an invocation."
 - Only one setup runs at a time; a second one says to wait.
 - The release's SHA256SUMS.txt now checks with `sha256sum -c`. 1.0.0's ended its line the Windows way, so a good download failed the check.
 

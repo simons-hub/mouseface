@@ -306,9 +306,14 @@ try {
 } catch {
     $failure = $_
     Remove-Item -LiteralPath "$appExe.new" -Force -ErrorAction SilentlyContinue
+    # What this run made and could not take away again: named at the end, as setup names it.
+    $stuck = @()
     if (-not $Trial) {
         foreach ($path in @($startupLink, $menuLink)) {
-            if ($path -and -not $hadLink[$path] -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+            if ($path -and -not $hadLink[$path] -and (Test-Path -LiteralPath $path)) {
+                Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+                if (Test-Path -LiteralPath $path) { $stuck += $path }
+            }
         }
     }
     if ($moved -and (Test-Path -LiteralPath $kept)) {
@@ -316,19 +321,26 @@ try {
             Stop-Running # the new copy, if it got as far as starting
             Move-Item -LiteralPath $kept -Destination $appExe -Force
             Write-Host "The copy that was there is back in place."
-        } catch { $putBackFailed = $true; Write-Warning "The copy that was there couldn't be put back ($($_.Exception.Message)); it is saved as $kept." }
+        } catch {
+            $putBackFailed = $true
+            Write-Warning ("The copy that was there couldn't be put back ($($_.Exception.Message.Trim().TrimEnd('.'))); it is saved as $kept. " +
+                "If the new copy doesn't start when you sign in, run install.cmd -Uninstall, which removes it and the saved copy.")
+        }
     } elseif ($placed -and -not $hadExe) {
         try {
             # The new copy, if it got as far as starting (one Windows blocked never did, and can't be asked to quit).
             if (Get-Running | Where-Object { $_.Path -eq $appExe }) { Stop-Running }
             Remove-Item -LiteralPath $appExe -Force
-        } catch { Write-Warning "Could not remove the $AppName this left in $appExe ($($_.Exception.Message)); delete it by hand." }
+        } catch { Write-Warning "Could not remove the $AppName this left in $appExe ($($_.Exception.Message.Trim().TrimEnd('.'))); delete it by hand." }
+    } elseif ($hadExe -and -not $moved) {
+        Write-Host "The copy that was there is still in place."
     }
     # A folder this run made goes again if nothing is in it (settings.ini or a log the new copy wrote keep it).
     if (-not $hadDir -and -not (Get-ChildItem -LiteralPath $appDir -Force -ErrorAction SilentlyContinue)) {
         Remove-Item -LiteralPath $appDir -Force -ErrorAction SilentlyContinue
     }
-    if (Test-Path -LiteralPath "$appExe.new") { Write-Warning "Could not remove $appExe.new, which this left; delete it by hand." }
+    if (Test-Path -LiteralPath "$appExe.new") { $stuck += "$appExe.new" }
+    if ($stuck) { Write-Warning "This couldn't delete everything it added, so delete by hand: $($stuck -join ', ')." }
     elseif (-not $hadExe -and -not (Test-Path -LiteralPath $appExe)) { Write-Host "Nothing was installed." }
     Restart-Previous
     throw $failure

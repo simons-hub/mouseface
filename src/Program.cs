@@ -299,7 +299,7 @@ namespace MouseFace
         {
             // The full path, so a notepad.exe planted in the working folder or on PATH is never the one run.
             try { Process.Start(Path.Combine(Environment.SystemDirectory, "notepad.exe"), "\"" + SettingsFile.FilePath + "\""); }
-            catch (Exception ex) { Box("Could not open " + SettingsFile.FilePath + ": " + ex.Message, true); }
+            catch (Exception ex) { Box("Could not open " + SettingsFile.FilePath + ": " + Installer.Sentence(ex.Message), true); }
         }
 
         static bool FormOpen(Form f) { return f != null && !f.IsDisposed; }

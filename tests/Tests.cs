@@ -558,8 +558,36 @@ namespace MouseFace.Tests
                 Installer.Place(Assembly.GetExecutingAssembly().Location, dir, startup, menu);
                 Check("setup copies the program into its folder", File.Exists(Path.Combine(dir, App.Name + ".exe")));
                 Check("  ...through a new file renamed over the old, which is not left behind", !File.Exists(Path.Combine(dir, App.Name + ".exe.new")));
+                string leftNew = Path.Combine(dir, App.Name + ".exe" + Installer.Fresh);
+                File.WriteAllText(leftNew, "a new file an earlier run left, read-only");
+                File.SetAttributes(leftNew, FileAttributes.ReadOnly);
+                Installer.Place(Assembly.GetExecutingAssembly().Location, dir);
+                Check("  ...even over a read-only one an earlier run left", !File.Exists(leftNew) && File.Exists(Path.Combine(dir, App.Name + ".exe")));
                 Check("setup makes the sign-in and Start menu shortcuts", File.Exists(startup) && File.Exists(menu));
                 Check("  ...each leading to the program", LeadsTo(startup, Path.Combine(dir, App.Name + ".exe")) && LeadsTo(menu, Path.Combine(dir, App.Name + ".exe")));
+                // What you set on a shortcut yourself (a shortcut key, Run minimized) survives an update, as in 1.0.0.
+                Native.IShellLinkW custom = (Native.IShellLinkW)new Native.ShellLink();
+                try
+                {
+                    ((System.Runtime.InteropServices.ComTypes.IPersistFile)custom).Load(menu, 0);
+                    custom.SetHotkey(0x064D); // Ctrl+Alt+M
+                    custom.SetShowCmd(7); // minimized
+                    ((System.Runtime.InteropServices.ComTypes.IPersistFile)custom).Save(menu, true);
+                }
+                finally { Marshal.FinalReleaseComObject(custom); }
+                Installer.Place(Assembly.GetExecutingAssembly().Location, dir, menu);
+                ushort hotkey;
+                int showCmd;
+                Native.IShellLinkW reread = (Native.IShellLinkW)new Native.ShellLink();
+                try
+                {
+                    ((System.Runtime.InteropServices.ComTypes.IPersistFile)reread).Load(menu, 0);
+                    reread.GetHotkey(out hotkey);
+                    reread.GetShowCmd(out showCmd);
+                }
+                finally { Marshal.FinalReleaseComObject(reread); }
+                Check("  ...and an update keeps a shortcut key and Run minimized you set on one",
+                    hotkey == 0x064D && showCmd == 7 && LeadsTo(menu, Path.Combine(dir, App.Name + ".exe")));
                 // A user whose name has letters outside the PC's language (a Polish name on a PC set to
                 // English, say), whose shortcuts Windows' older shortcut maker couldn't save.
                 string far = Path.Combine(home, "Łukasz Ω 日本 Иван");
@@ -784,6 +812,10 @@ namespace MouseFace.Tests
                 && !Installer.Blocked(4560) && !Installer.Blocked(4579) && !Installer.Blocked(4583) && !Installer.Blocked(5));
             Check("any other failure keeps Windows' words, ending them with a full stop, then what was left",
                 Installer.Problem(new Win32Exception(5, "Access is denied"), true, "Nothing was installed.") == "Could not install: Access is denied. Nothing was installed.");
+            Check("Windows' words joined into a sentence end with one full stop",
+                Installer.Sentence(" Access is denied ") == "Access is denied." && Installer.Sentence("Access is denied.") == "Access is denied.");
+            string japanese = "アクセスが拒否されました。"; // access is denied, with its own full stop
+            Check("  ...and Chinese or Japanese ones keep their own, with none added", Installer.Sentence(japanese) == japanese);
             Check("an install Installed apps wouldn't list says so in plain words, and how to uninstall it later",
                 Installer.UnlistedNote == "It couldn't be listed in Installed apps, so to uninstall it later, run this setup again and choose Uninstall.");
             // Outcome(first, moved, back, blocked, left, stranded)
@@ -795,7 +827,7 @@ namespace MouseFace.Tests
             Check("  ...or, when the copy was never moved, that it is still in place", Installer.Outcome(false, false, false, false, null, null) == "The copy that was there is still in place.");
             Check("  ...or, when it could not put the copy back, where that copy is, and how to remove the new one",
                 Installer.Outcome(false, true, false, true, null, @"C:\x\MouseFace.exe.old") == @"The copy that was there couldn't be put back; it is saved as C:\x\MouseFace.exe.old. "
-                    + "If the new copy doesn't start when you sign in, run this again and choose Uninstall to remove it.");
+                    + "If the new copy doesn't start when you sign in, run this again and choose Uninstall, which removes it and the saved copy.");
             // One setup at a time: while one runs, another (on another thread, as another program would be) says to wait.
             string inner = null;
             string outer = Installer.OneAtATime(delegate
