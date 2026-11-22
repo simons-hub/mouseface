@@ -8,7 +8,7 @@ namespace MouseFace
     internal static class App
     {
         internal const string Name = "MouseFace";
-        internal const string Version = "1.0.0"; // also stamped on the .exe, through AssemblyInfo.cs
+        internal const string Version = "1.0.1"; // also stamped on the .exe, through AssemblyInfo.cs
         internal const string Home = "https://github.com/simons-hub/mouseface";
         internal const string Publisher = "ZebraTree Media"; // shown in Settings > Apps, Installed apps and Startup
 
