@@ -4,6 +4,7 @@
 
 - When Windows won't let the program it installed start (Smart App Control, or another rule that lets only approved apps run), setup says which, instead of only Windows' words. The README says what to do.
 - A first install that fails takes away what it added: the program, its two shortcuts, and its folder unless settings.ini or the log is in it. 1.0.0 left the program and both shortcuts behind, so Windows tried to start it at every sign-in.
+- Setup says "MouseFace installed successfully." once it has installed it, instead of closing without a word, and its window before a first install shows just its title and buttons.
 
 ## 1.0.0
 

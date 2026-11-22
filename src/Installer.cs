@@ -482,17 +482,18 @@ namespace MouseFace
             title.Text = installed == null ? "Install " + App.Name + " " + App.Version : App.Name + " " + installed + " is installed";
             page.Controls.Add(title);
 
-            Label body = new Label();
-            body.AutoSize = true;
-            body.MaximumSize = Ui.Sz(400, 0);
-            body.Text = installed == null
-                ? "It's set up just for you on this PC, and starts by itself whenever you sign in to Windows. "
-                    + (File.Exists(Path.Combine(Installer.Dir, "settings.ini")) ? "Your settings from before are kept." : "Its Settings window opens once it is installed.")
-                : newerInstalled ? "This setup is the older version " + App.Version + ". To use it instead, uninstall " + installed
-                    + " first, then run this again. Your settings are kept."
-                : installed == App.Version ? "You can reinstall it or uninstall it."
-                : "You can update it to " + App.Version + " or uninstall it. Your settings are kept either way.";
-            page.Controls.Add(body);
+            // A first install needs no words beyond its title: the box after it says how it went.
+            if (installed != null)
+            {
+                Label body = new Label();
+                body.AutoSize = true;
+                body.MaximumSize = Ui.Sz(400, 0);
+                body.Text = newerInstalled ? "This setup is the older version " + App.Version + ". To use it instead, uninstall " + installed
+                        + " first, then run this again. Your settings are kept."
+                    : installed == App.Version ? "You can reinstall it or uninstall it."
+                    : "You can update it to " + App.Version + " or uninstall it. Your settings are kept either way.";
+                page.Controls.Add(body);
+            }
 
             FlowLayoutPanel buttons = new FlowLayoutPanel();
             buttons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -504,7 +505,7 @@ namespace MouseFace
             if (!newerInstalled)
             {
                 go = SettingsForm.DialogButton(installed == null ? "Install" : installed == App.Version ? "Reinstall" : "Update");
-                go.Click += delegate { Run(Installer.Install(self), null); };
+                go.Click += delegate { Run(Installer.Install(self), App.Name + " installed successfully."); };
                 buttons.Controls.Add(go);
             }
             if (installed != null)
