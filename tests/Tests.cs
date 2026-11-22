@@ -60,6 +60,10 @@ namespace MouseFace.Tests
             Shot(touchpad, Path.Combine(dir, "settings-touchpad.png"), delegate { touchpad.OnButton(Btn.Left, false, false); });
             Shot(new AboutForm(), Path.Combine(dir, "about.png"), null);
             Shot(new SetupForm(Assembly.GetExecutingAssembly().Location), Path.Combine(dir, "setup.png"), null);
+            Shot(new MessageForm(App.Name, "Uninstall " + App.Name + "?", MessageForm.Kind.Question, "Uninstall", "Cancel", Installer.DeleteSettingsText),
+                Path.Combine(dir, "uninstall.png"), null);
+            Shot(new MessageForm(App.Name + " setup", Installer.Problem(new System.ComponentModel.Win32Exception(4551), true, "Nothing was installed."),
+                MessageForm.Kind.Warning, "OK", null, null), Path.Combine(dir, "blocked.png"), null);
             using (Form host = new Form())
             {
                 host.Show();
@@ -604,26 +608,48 @@ namespace MouseFace.Tests
                 Check("  ...and gives a shortcut that was there before its old contents back",
                     Convert.ToBase64String(File.ReadAllBytes(m2)) == Convert.ToBase64String(m2Before));
                 File.WriteAllText(e2eExe, "the copy you had");
+                File.WriteAllText(e2eExe + Installer.Kept, "a copy an earlier failed update could not put back");
                 said = Installer.Install(stand, e2e, s2, m2, false, register);
-                Check("end to end: an update Windows won't start puts back the copy you had, and says so",
-                    File.ReadAllText(e2eExe) == "the copy you had" && !File.Exists(e2eExe + Installer.Kept) && said.EndsWith(". The copy you had is back in place."));
+                Check("end to end: an update Windows won't start puts back the copy that was there, and says so",
+                    File.ReadAllText(e2eExe) == "the copy you had" && said.EndsWith(". The copy that was there is back in place."));
+                Check("  ...never writing over a copy an earlier failed update set aside, nor leaving one of its own",
+                    File.Exists(e2eExe + Installer.Kept) && File.ReadAllText(e2eExe + Installer.Kept) == "a copy an earlier failed update could not put back" && !File.Exists(e2eExe + Installer.Kept + "1"));
                 Check("  ...removes the shortcut it made, keeps settings.ini, and is not listed",
                     !File.Exists(s2) && File.Exists(m2) && File.Exists(e2eIni) && !e2eListed);
+                File.WriteAllText(e2eExe + Installer.Kept + "1", "another");
+                Installer.DeleteKept(e2eExe);
+                Check("once a new copy runs, every copy set aside goes", !File.Exists(e2eExe + Installer.Kept) && !File.Exists(e2eExe + Installer.Kept + "1") && File.Exists(e2eExe));
+                Check("a copy is set aside under a name no file has", Installer.FreeName(e2eExe + Installer.Kept) == e2eExe + Installer.Kept
+                    && Installer.FreeName(e2eExe) == e2eExe + "1");
 
-                // Uninstall with "Also delete my settings" ticked: the folder goes, settings, log and all.
+                // A shortcut there that can't be read is left alone by a failed install, never taken for one it made.
+                string lockedLink = Path.Combine(home, "locked.lnk");
+                File.WriteAllText(lockedLink, "a shortcut in use");
+                using (new FileStream(lockedLink, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                    Check("a shortcut that can't be read is told apart from a missing one", ReferenceEquals(Installer.ReadIfThere(lockedLink), Installer.Unreadable)
+                        && Installer.ReadIfThere(Path.Combine(home, "none.lnk")) == null);
+                Installer.PutBack(e2e, false, true, new string[] { lockedLink }, new byte[][] { Installer.Unreadable });
+                Check("  ...and a failed install leaves it as it was", File.ReadAllText(lockedLink) == "a shortcut in use");
+
+                // Uninstall with "Also delete my settings" ticked: MouseFace's own files go, and then the folder.
                 string data = Path.Combine(home, "data");
-                Directory.CreateDirectory(Path.Combine(data, "sub"));
-                File.WriteAllText(Path.Combine(data, "settings.ini"), "[Mouse]");
-                File.WriteAllText(Path.Combine(data, "brightness.txt"), "70");
-                File.WriteAllText(Path.Combine(data, App.Name + ".log"), "a log");
+                Directory.CreateDirectory(data);
+                foreach (string name in new string[] { "settings.ini", "settings.ini.tmp", "brightness.txt", App.Name + ".log", App.Name + ".log.old", App.Name + ".exe.old" })
+                    File.WriteAllText(Path.Combine(data, name), "MouseFace's own");
                 File.SetAttributes(Path.Combine(data, "settings.ini"), FileAttributes.ReadOnly);
                 string cwd = Environment.CurrentDirectory;
                 Environment.CurrentDirectory = data; // as when Installed apps starts the uninstall in it
                 string notGone = Installer.DeleteData(data);
-                Check("deleting the settings deletes the whole folder, a read-only settings.ini and the folder it is working in too",
+                Check("deleting the settings deletes MouseFace's files (a read-only settings.ini too) and the folder it is working in",
                     notGone == null && !Directory.Exists(data));
                 Environment.CurrentDirectory = cwd;
-                Directory.CreateDirectory(data);
+                Directory.CreateDirectory(Path.Combine(data, "mine"));
+                File.WriteAllText(Path.Combine(data, "settings.ini"), "[Mouse]");
+                File.WriteAllText(Path.Combine(data, "settings-backup.ini"), "a copy of yours");
+                notGone = Installer.DeleteData(data);
+                Check("  ...but nothing else of yours kept there, which keeps the folder",
+                    notGone == null && !File.Exists(Path.Combine(data, "settings.ini")) && File.Exists(Path.Combine(data, "settings-backup.ini"))
+                    && Directory.Exists(Path.Combine(data, "mine")));
                 string renamed = Path.Combine(data, App.Name + ".exe" + Installer.Aside), open = Path.Combine(data, "settings.ini");
                 File.WriteAllText(renamed, "a program an uninstall renamed where it was, still running");
                 File.WriteAllText(open, "[Mouse]");
@@ -632,6 +658,16 @@ namespace MouseFace.Tests
                     notGone = Installer.DeleteData(data);
                 Check("  ...and names what it could not delete, but not a renamed program still running", notGone == open);
                 Check("  ...and is fine when the folder is already gone", Installer.DeleteData(Path.Combine(home, "never")) == null);
+                Check("  ...and never touches a folder named relative to wherever it runs", Installer.DeleteData(App.Name) == App.Name);
+                string target = Path.Combine(home, "target"), link = Path.Combine(home, "link");
+                Directory.CreateDirectory(target);
+                using (Process mk = Process.Start(new ProcessStartInfo("cmd.exe", "/c mklink /J \"" + link + "\" \"" + target + "\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true }))
+                    mk.WaitForExit();
+                Directory.Delete(target);
+                bool madeLink;
+                try { madeLink = (File.GetAttributes(link) & FileAttributes.ReparsePoint) != 0; } catch (Exception) { madeLink = false; }
+                Check("(the test made a link to a folder that is gone)", madeLink);
+                Check("  ...and a folder that is a link to nowhere is left as it is, not a crash", Installer.DeleteData(link) == link);
             }
             finally { try { Directory.Delete(home, true); } catch (Exception) { } }
             Check("uninstalled: says so, and that the settings are kept",
@@ -654,11 +690,13 @@ namespace MouseFace.Tests
                 && !Installer.Blocked(4560) && !Installer.Blocked(4579) && !Installer.Blocked(4583) && !Installer.Blocked(5));
             Check("any other failure keeps Windows' words, ending them with a full stop, then what was left",
                 Installer.Problem(new Win32Exception(5), true, "Nothing was installed.") == "Could not install: Access is denied. Nothing was installed.");
-            Check("what a failed first install says", Installer.Outcome(true, false, true, null) == "Nothing was installed.");
-            Check("  ...or what it couldn't delete", Installer.Outcome(true, false, false, @"C:\x\MouseFace.lnk") == @"Delete what it left by hand: C:\x\MouseFace.lnk.");
-            Check("a failed update says the copy is back", Installer.Outcome(false, true, false, null) == "The copy you had is back in place.");
-            Check("  ...and, when Windows blocked it, how to remove that copy if it is blocked too", Installer.Outcome(false, true, true, null).Contains("choose Uninstall"));
-            Check("  ...and nothing when there was nothing to put back", Installer.Outcome(false, false, false, null) == null);
+            Check("what a failed first install says", Installer.Outcome(true, false, true, null, null) == "Nothing was installed.");
+            Check("  ...or what it couldn't delete", Installer.Outcome(true, false, false, @"C:\x\MouseFace.lnk", null) == @"Delete what it left by hand: C:\x\MouseFace.lnk.");
+            Check("a failed update says the copy is back", Installer.Outcome(false, true, false, null, null) == "The copy that was there is back in place.");
+            Check("  ...and, when Windows blocked it, how to remove that copy if it is blocked too", Installer.Outcome(false, true, true, null, null).Contains("choose Uninstall"));
+            Check("  ...and nothing when there was nothing to put back", Installer.Outcome(false, false, false, null, null) == null);
+            Check("  ...or, when it could not put the copy back, where that copy is",
+                Installer.Outcome(false, false, true, null, @"C:\x\MouseFace.exe.old") == @"The copy that was there couldn't be put back; it is saved as C:\x\MouseFace.exe.old.");
             Installer.SmartAppControlOn(); // reads, never throws
             Check("a copy outside the install folder is setup", Installer.IsSetup(Path.Combine(home, App.Name + ".exe")));
             Check("the installed copy is not setup", !Installer.IsSetup(Installer.Exe.ToUpperInvariant()));
@@ -999,6 +1037,26 @@ namespace MouseFace.Tests
                 if (aside != null) try { File.Delete(aside); } catch (Exception) { }
             }
             try { Directory.Delete(home, true); } catch (Exception) { }
+
+            // MouseFace's message window: focus starts on its first button, never on the tick box, which
+            // starts unticked; moved to a screen scaled differently, its icon is drawn afresh at the new size.
+            using (MessageForm m = new MessageForm(App.Name, "Uninstall " + App.Name + "?", MessageForm.Kind.Question, "Uninstall", "Cancel", Installer.DeleteSettingsText))
+            {
+                m.StartPosition = FormStartPosition.Manual;
+                m.Location = new Point(-20000, -20000);
+                m.ShowInTaskbar = false;
+                m.Show();
+                Application.DoEvents();
+                Button focused = m.ActiveControl as Button;
+                Check("the uninstall question starts with focus on Uninstall, not on the tick box, and unticked",
+                    focused != null && focused.Text == "Uninstall" && !m.Ticked);
+                int was = m.IconImage.Width;
+                m.RescaleTo(m.Dpi * 2);
+                Application.DoEvents();
+                Check("  ...and on a screen scaled twice as much its icon is drawn again at its new size (" + was + " to " + m.IconImage.Width + " px)",
+                    m.IconImage.Width == m.IconSize && m.IconSize >= was * 2 - 2);
+                m.Close();
+            }
 
             // A window moved to a screen scaled differently grows or shrinks to match, and back again.
             Config shown = TestMain.SampleConfig();

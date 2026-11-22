@@ -39,13 +39,13 @@ namespace MouseFace
             + "  --quit           ask the running copy to let go of everything and exit\n"
             + "  --install        install this copy for the current user and start it, without asking\n"
             + "  --uninstall      remove the program, its shortcuts and its Installed apps entry, keeping the settings\n"
-            + "  --remove         the same, asking first (what Settings > Apps > Installed apps runs)\n"
+            + "  --remove         the same, asking first and offering to delete the settings too (what Settings > Apps > Installed apps runs)\n"
             + "  --register       list the installed program in Installed apps (install.ps1 uses it)\n"
             + "Settings: settings.ini in %LOCALAPPDATA%\\" + App.Name + " (tray menu > Settings).";
         internal const string QuitEventName = @"Local\" + App.Name + ".quit";
 
-        const string NotAsAdmin = App.Name + " didn't start because it was opened with Run as administrator, which it doesn't need. "
-            + "Open it the normal way instead.";
+        const string NotAsAdmin = App.Name + " didn't start because it was started as administrator (with Run as administrator, or from a window "
+            + "opened that way), which it doesn't need. Start it again the normal way.";
 
         [STAThread]
         static int Main(string[] args)
@@ -78,6 +78,8 @@ namespace MouseFace
                 {
                     // Uninstall in Settings > Apps > Installed apps: ask first, then say how it went.
                     if (elevated) { Box(NotAsAdmin, true); return 5; }
+                    // Sharp on a scaled screen, as setup is; without it Windows stretches the windows as a picture.
+                    try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch (Exception) { }
                     Application.EnableVisualStyles();
                     bool deleteSettings;
                     if (!MessageForm.Ask(null, App.Name, "Uninstall " + App.Name + "?", "Uninstall", "Cancel", Installer.DeleteSettingsText, out deleteSettings)) return 1;

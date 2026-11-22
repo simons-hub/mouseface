@@ -171,7 +171,8 @@ if (-not $UnitOnly -and $uacOn -and $principal.IsInRole([Security.Principal.Wind
 if ($Uninstall) {
     $was = [bool]((Get-Running) -or (Test-Path -LiteralPath $appExe) -or (Test-Path -LiteralPath $uninstallKey))
     Stop-Running
-    foreach ($path in @($appExe, $asideExe, "$appExe.old", $startupLink, $menuLink)) {
+    $leftovers = @(Get-ChildItem -LiteralPath $appDir -Filter "$AppName.exe.old*" -ErrorAction SilentlyContinue | ForEach-Object FullName)
+    foreach ($path in @($appExe, $asideExe, $startupLink, $menuLink) + $leftovers) {
         if ($path -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Force; $was = $true }
     }
     if (Test-Path -LiteralPath $uninstallKey) { Remove-Item -LiteralPath $uninstallKey -Recurse }
@@ -259,12 +260,17 @@ if ($Test) {
 New-Item -ItemType Directory -Force -Path $appDir | Out-Null
 $firstRun = -not (Test-Path -LiteralPath (Join-Path $appDir 'settings.ini'))
 # The copy in place is kept aside until the new one has started, and put back if anything fails.
+# Under a name no file has yet, so a copy an earlier failed run could not put back is never written over.
 $kept = "$appExe.old"
+for ($n = 1; (Test-Path -LiteralPath $kept); $n++) { $kept = "$appExe.old$n" }
 $moved = $false # only a copy this run moved aside is ever put back, never an older leftover
 # A first install that fails takes its program away again, so a later setup doesn't take it for an
 # installed copy to update. Only a program this run placed, where there was none, is ever deleted.
 $hadExe = Test-Path -LiteralPath $appExe
 $placed = $false
+# Likewise a shortcut this run makes goes again if it fails; one that was there stays.
+$hadLink = @{}
+foreach ($path in @($startupLink, $menuLink)) { if ($path) { $hadLink[$path] = [bool](Test-Path -LiteralPath $path) } }
 try {
     Copy-Item -LiteralPath $built.App -Destination "$appExe.new" -Force
     if (Test-Path -LiteralPath $appExe) { Move-Item -LiteralPath $appExe -Destination $kept -Force; $moved = $true }
@@ -289,10 +295,16 @@ try {
             $lnk.Save()
         }
     }
-    Remove-Item -LiteralPath $kept -ErrorAction SilentlyContinue
+    # The new copy runs, so no copy set aside, now or by an earlier run, is needed.
+    Get-ChildItem -LiteralPath $appDir -Filter "$AppName.exe.old*" | Remove-Item -ErrorAction SilentlyContinue
 } catch {
     $failure = $_
     Remove-Item -LiteralPath "$appExe.new" -ErrorAction SilentlyContinue
+    if (-not $Trial) {
+        foreach ($path in @($startupLink, $menuLink)) {
+            if ($path -and -not $hadLink[$path] -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+        }
+    }
     if ($moved -and (Test-Path -LiteralPath $kept)) {
         try {
             Stop-Running # the new copy, if it got as far as starting

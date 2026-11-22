@@ -50,7 +50,7 @@ namespace MouseFace
         internal static string DowngradeProblem(string installed)
         {
             return App.Name + " " + installed + " is installed, which is newer than this " + App.Version + ". To use "
-                + App.Version + " instead, uninstall " + installed + " first (your settings are kept), then run this again.";
+                + App.Version + " instead, uninstall " + installed + " first (you can keep your settings), then run this again.";
         }
 
         // Installs (or replaces) the program and its two shortcuts, then starts it. Returns why not, or null.
@@ -83,8 +83,9 @@ namespace MouseFace
             string[] links = { startup, menu };
             byte[][] before = { ReadIfThere(startup), ReadIfThere(menu) };
             // The copy in place is kept aside until the new one has started, and put back if anything
-            // fails, so a failed update leaves what was there, running as it was.
-            string kept = exe + Kept;
+            // fails, so a failed update leaves what was there, running as it was. It is kept under a name
+            // no file has yet: a copy an earlier failed update could not put back is never written over.
+            string kept = FreeName(exe + Kept);
             bool keeping = false;
             try
             {
@@ -99,31 +100,55 @@ namespace MouseFace
                 using (Process started = Start(exe, dir))
                     if (started != null && started.WaitForExit(2000))
                         throw new InvalidOperationException("the new copy stopped as soon as it started (its log says why: " + Log.FilePath + ")");
-                if (keeping) { try { File.Delete(kept); } catch (Exception) { } } // else the next install replaces it
+                DeleteKept(exe); // the new copy runs, so no copy set aside, now or before, is needed
                 string unlisted = register();
-                if (unlisted != null) Log.Write(unlisted); // it still works; only the Installed apps entry is missing
-                return null;
+                if (unlisted == null) return null;
+                // It works; only the Installed apps entry is missing, so say so rather than "successfully".
+                Log.Write(unlisted);
+                return App.Name + " is installed and running. " + Sentence(unlisted) + " To uninstall it later, run this setup again and choose Uninstall.";
             }
             catch (Exception ex)
             {
                 bool back = false;
-                try
-                {
-                    if (keeping && File.Exists(kept)) { Delete(exe); Move(kept, exe); back = true; }
-                    // A first install has no copy of its own to start again: the one in place is the new
-                    // one, which just failed.
-                    if (wasRunning && !first && File.Exists(exe)) using (Start(exe, dir)) { }
-                }
-                catch (Exception) { }
+                // One rename over the new copy, tried for a moment while something (antivirus, say) still
+                // has it open.
+                if (keeping && File.Exists(kept)) { try { Move(kept, exe); back = true; } catch (Exception) { } }
+                // A first install has no copy of its own to start again: the one in place is the new one,
+                // which just failed.
+                if (wasRunning && !first && File.Exists(exe)) { try { using (Start(exe, dir)) { } } catch (Exception) { } }
                 string left = PutBack(dir, first, hadDir, links, before);
-                return Problem(ex, SmartAppControlOn(), Outcome(first, back, IsBlock(ex), left));
+                string stranded = keeping && !back && File.Exists(kept) ? kept : null;
+                return Problem(ex, SmartAppControlOn(), Outcome(first, back, IsBlock(ex), left, stranded));
             }
         }
 
-        static byte[] ReadIfThere(string file)
+        // path, or path1, path2 and so on: the first name no file has.
+        internal static string FreeName(string path)
         {
-            try { return File.Exists(file) ? File.ReadAllBytes(file) : null; }
-            catch (Exception) { return null; }
+            if (!File.Exists(path)) return path;
+            for (int n = 1; ; n++) if (!File.Exists(path + n)) return path + n;
+        }
+
+        // Deletes every copy an update set aside (MouseFace.exe.old, .old1 and so on), as far as it can.
+        internal static void DeleteKept(string exe)
+        {
+            try
+            {
+                foreach (string file in Directory.GetFiles(Path.GetDirectoryName(exe), Path.GetFileName(exe) + Kept + "*"))
+                    try { File.Delete(file); } catch (Exception) { } // the next install or uninstall tries again
+            }
+            catch (Exception) { }
+        }
+
+        // A shortcut that is there but can't be read (in use, or no access): left as it is by PutBack,
+        // never taken for one the install made.
+        internal static readonly byte[] Unreadable = new byte[0];
+
+        internal static byte[] ReadIfThere(string file)
+        {
+            if (!File.Exists(file)) return null;
+            try { return File.ReadAllBytes(file); }
+            catch (Exception) { return Unreadable; }
         }
 
         // Puts back what an install that failed changed. A first install's program goes, and its folder
@@ -141,7 +166,7 @@ namespace MouseFace
             }
             for (int i = 0; i < links.Length; i++)
             {
-                if (links[i] == null) continue;
+                if (links[i] == null || ReferenceEquals(before[i], Unreadable)) continue;
                 try
                 {
                     if (before[i] == null) Delete(links[i]);
@@ -154,12 +179,14 @@ namespace MouseFace
         }
 
         // What a failed install left, as setup says it. left: what could not be deleted, or null.
-        internal static string Outcome(bool first, bool back, bool blocked, string left)
+        // stranded: where the copy that was there is, when it could not be put back; or null.
+        internal static string Outcome(bool first, bool back, bool blocked, string left, string stranded)
         {
             List<string> parts = new List<string>();
+            if (stranded != null) parts.Add("The copy that was there couldn't be put back; it is saved as " + stranded + ".");
             if (back)
             {
-                parts.Add("The copy you had is back in place.");
+                parts.Add("The copy that was there is back in place.");
                 // Windows' rule is likely to stop that copy too (as with a first install that 1.0.0 left
                 // behind when Windows blocked it).
                 if (blocked) parts.Add("If Windows blocks that one too, run this again and choose Uninstall to remove it.");
@@ -288,29 +315,37 @@ namespace MouseFace
             return problems.Count == 0 ? null : App.Name + " is uninstalled, but " + string.Join(", and ", problems.ToArray()) + ".";
         }
 
-        // Deletes the folder settings.ini, the saved brightness and the log live in, as far as it can.
-        // A program an uninstall renamed where it was (when the temp folder is on another drive) is still
-        // running, and stays for the next install to delete; it is not counted. Returns what could not be
-        // deleted, or null.
+        // "Also delete my settings": deletes MouseFace's own files in its folder, and nothing else there:
+        // settings.ini (and the file a save writes first), the saved brightness, the log, and program
+        // files an install or uninstall left. Then the folder, once it is empty, so anything else of
+        // yours kept there keeps it. A program an uninstall renamed where it was (when the temp folder is
+        // on another drive) is still running, and stays for the next install to delete; it is not
+        // counted. Returns what could not be deleted, or null.
         internal static string DeleteData(string dir)
         {
-            if (!Directory.Exists(dir)) return null;
-            // This process may be working in that folder (Installed apps starts it there), which would
-            // keep the folder itself from going.
-            try { Environment.CurrentDirectory = Path.GetTempPath(); } catch (Exception) { }
-            List<string> left = new List<string>();
-            foreach (string file in Directory.GetFiles(dir))
+            try
             {
-                try { File.SetAttributes(file, FileAttributes.Normal); File.Delete(file); }
-                catch (Exception) { if (!file.EndsWith(Aside, StringComparison.OrdinalIgnoreCase)) left.Add(file); }
+                if (!Path.IsPathRooted(dir)) return dir; // never a folder relative to wherever this runs
+                dir = Path.GetFullPath(dir);
+                if (!Directory.Exists(dir)) return null;
+                // This process may be working in that folder (Installed apps starts it there), which would
+                // keep the folder itself from going.
+                try { Environment.CurrentDirectory = Path.GetTempPath(); } catch (Exception) { }
+                List<string> files = new List<string>();
+                foreach (string name in new string[] { "settings.ini", "settings.ini.tmp", "brightness.txt", App.Name + ".log", App.Name + ".log.old" })
+                    files.Add(Path.Combine(dir, name));
+                files.AddRange(Directory.GetFiles(dir, App.Name + ".exe*")); // .new, .old, .uninstalled
+                List<string> left = new List<string>();
+                foreach (string file in files)
+                {
+                    if (!File.Exists(file)) continue;
+                    try { File.SetAttributes(file, FileAttributes.Normal); File.Delete(file); }
+                    catch (Exception) { if (!file.EndsWith(Aside, StringComparison.OrdinalIgnoreCase)) left.Add(file); }
+                }
+                try { Directory.Delete(dir); } catch (Exception) { } // only once empty
+                return left.Count == 0 ? null : string.Join(", ", left.ToArray());
             }
-            foreach (string sub in Directory.GetDirectories(dir))
-            {
-                try { Directory.Delete(sub, true); }
-                catch (Exception) { left.Add(sub); }
-            }
-            try { Directory.Delete(dir); } catch (Exception) { } // not while a renamed program is in it
-            return left.Count == 0 ? null : string.Join(", ", left.ToArray());
+            catch (Exception) { return dir; } // a folder that can't be read (a link to nowhere): left as it is
         }
 
         // ---- the entry in Settings > Apps > Installed apps --------------------------------------------
@@ -387,7 +422,7 @@ namespace MouseFace
             string exe = Path.Combine(dir, App.Name + ".exe");
             if (SamePath(self, exe)) MoveAside(exe);
             else Delete(exe);
-            try { File.Delete(exe + Kept); } catch (Exception) { } // left by an update that couldn't tidy up
+            DeleteKept(exe); // left by an update that couldn't tidy up
             List<string> left = new List<string>();
             foreach (string link in links)
             {
@@ -529,9 +564,9 @@ namespace MouseFace
                 body.AutoSize = true;
                 body.MaximumSize = Ui.Sz(400, 0);
                 body.Text = newerInstalled ? "This setup is the older version " + App.Version + ". To use it instead, uninstall " + installed
-                        + " first, then run this again. Your settings are kept."
+                        + " first (you can keep your settings), then run this again."
                     : installed == App.Version ? "You can reinstall it or uninstall it."
-                    : "You can update it to " + App.Version + " or uninstall it. Your settings are kept either way.";
+                    : "You can update it to " + App.Version + ", which keeps your settings, or uninstall it.";
                 page.Controls.Add(body);
             }
 

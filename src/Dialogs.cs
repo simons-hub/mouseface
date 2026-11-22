@@ -12,11 +12,15 @@ namespace MouseFace
         internal enum Kind { Information, Warning, Question }
 
         readonly CheckBox option;
+        readonly PictureBox picture;
+        readonly Label words;
+        readonly Kind kind;
 
         // yes: the first button ("OK" for a message); no: the second, or null for one button.
         // optionText: a tick box under the words, not ticked, or null for none.
         internal MessageForm(string caption, string text, Kind kind, string yes, string no, string optionText)
         {
+            this.kind = kind;
             Text = caption;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             Icon = App.Icon;
@@ -32,14 +36,14 @@ namespace MouseFace
             page.ColumnCount = 2;
             page.Padding = Ui.Pad(20, 20, 24, 16);
 
-            PictureBox picture = new PictureBox();
+            picture = new PictureBox();
             picture.Size = Ui.Sz(32, 32);
             picture.SizeMode = PictureBoxSizeMode.Zoom;
             picture.Image = KindImage(kind, Ui.S(32));
             picture.Margin = Ui.Pad(0, 0, 14, 0);
             page.Controls.Add(picture, 0, 0);
 
-            Label words = new Label();
+            words = new Label();
             words.AutoSize = true;
             words.MaximumSize = Ui.Sz(420, 0);
             words.Text = text;
@@ -73,6 +77,9 @@ namespace MouseFace
             }
             AcceptButton = first;
             CancelButton = second ?? first;
+            // Focus on the first button, as in Windows' message box, never on the tick box, where a Space
+            // out of habit would tick "delete my settings".
+            Shown += delegate { ActiveControl = first; };
             page.Controls.Add(buttons, 0, 2);
             page.SetColumnSpan(buttons, 2);
 
@@ -82,12 +89,36 @@ namespace MouseFace
         }
 
         internal bool Ticked { get { return option != null && option.Checked; } }
+        internal Image IconImage { get { return picture.Image; } } // for the tests
+        internal int IconSize { get { return picture.Width; } }
+
+        // Moved to a screen scaled differently: the icon is drawn again at its new size, not stretched.
+        protected override void AfterRescale()
+        {
+            Image old = picture.Image;
+            picture.Image = KindImage(kind, picture.Width);
+            if (old != null) old.Dispose();
+        }
+
+        // Ctrl+C copies the message, as in Windows' message box: for a bug report, or a path to delete.
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == (Keys.Control | Keys.C))
+            {
+                try { Clipboard.SetText(Text + Environment.NewLine + Environment.NewLine + words.Text); } catch (Exception) { }
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
 
         // A message with OK.
         internal static void Tell(IWin32Window owner, string caption, string text, bool warning)
         {
             using (MessageForm f = new MessageForm(caption, text, warning ? Kind.Warning : Kind.Information, "OK", null, null))
+            {
+                f.ShowInTaskbar = owner == null; // a box of setup's needs no taskbar button of its own
                 f.ShowDialog(owner);
+            }
         }
 
         // A question: true for the first button. ticked: whether its tick box was ticked (false when
@@ -96,6 +127,7 @@ namespace MouseFace
         {
             using (MessageForm f = new MessageForm(caption, text, Kind.Question, yes, no, optionText))
             {
+                f.ShowInTaskbar = owner == null;
                 bool go = f.ShowDialog(owner) == DialogResult.OK;
                 ticked = go && f.Ticked;
                 return go;

@@ -6,7 +6,8 @@
 - A first install that fails takes away what it added: the program, its two shortcuts, and its folder unless settings.ini or the log is in it. 1.0.0 left the program and both shortcuts behind, so Windows tried to start it at every sign-in.
 - Setup says "MouseFace installed successfully." once it has installed it, instead of closing without a word, and its window before a first install shows just its title and buttons.
 - Uninstalling from Installed apps or from setup asks whether to also delete your settings (settings.ini, the saved brightness and the log). They are kept unless you tick it.
-- Setup's and the uninstaller's messages show in MouseFace's own window, in larger text than Windows' standard message box, with Windows' current icons.
+- Setup's and the uninstaller's messages show in MouseFace's own window, in larger text than Windows' standard message box, with Windows' current icons. Ctrl+C copies a message.
+- An update that fails, and can't put the copy that was there back, says where that copy is saved, and a later update never writes over it. Setup says so if it couldn't list MouseFace in Installed apps, rather than that it installed successfully.
 
 ## 1.0.0
 
