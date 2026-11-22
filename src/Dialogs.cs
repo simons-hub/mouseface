@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Media;
 using System.Windows.Forms;
 
 namespace MouseFace
@@ -15,6 +16,7 @@ namespace MouseFace
         readonly PictureBox picture;
         readonly Label words;
         readonly Kind kind;
+        int shownAt = Environment.TickCount; // when it appeared, in Windows' milliseconds
 
         // yes: the first button ("OK" for a message); no: the second, or null for one button.
         // optionText: a tick box under the words, not ticked, or null for none.
@@ -29,6 +31,7 @@ namespace MouseFace
             StartPosition = FormStartPosition.CenterScreen;
             AutoScaleMode = AutoScaleMode.None; // sizes are scaled by Ui.S
             Font = new Font("Segoe UI", 11f);
+            AccessibleRole = AccessibleRole.Dialog; // so a screen reader reads out the message, as Windows' box's
 
             TableLayoutPanel page = new TableLayoutPanel();
             page.AutoSize = true;
@@ -41,11 +44,14 @@ namespace MouseFace
             picture.SizeMode = PictureBoxSizeMode.Zoom;
             picture.Image = KindImage(kind, Ui.S(32));
             picture.Margin = Ui.Pad(0, 0, 14, 0);
+            picture.AccessibleRole = AccessibleRole.Graphic;
+            picture.AccessibleName = kind == Kind.Warning ? "Warning" : kind == Kind.Question ? "Question" : "Information";
             page.Controls.Add(picture, 0, 0);
 
             words = new Label();
             words.AutoSize = true;
             words.MaximumSize = Ui.Sz(420, 0);
+            words.UseMnemonic = false; // an & in a path (C:\Users\Tom&Jerry) is shown, not taken for a shortcut key
             words.Text = text;
             words.Margin = Ui.Pad(0, 4, 0, 0); // its first line level with the icon
             page.Controls.Add(words, 1, 0);
@@ -66,7 +72,6 @@ namespace MouseFace
             buttons.Anchor = AnchorStyles.Right;
             buttons.Margin = Ui.Pad(0, 20, 0, 0);
             Button first = SettingsForm.DialogButton(yes);
-            first.DialogResult = DialogResult.OK;
             buttons.Controls.Add(first);
             Button second = null;
             if (no != null)
@@ -74,12 +79,23 @@ namespace MouseFace
                 second = SettingsForm.DialogButton(no);
                 second.DialogResult = DialogResult.Cancel;
                 buttons.Controls.Add(second);
+                // A question opens centred, often right over the button that asked it (setup's Uninstall),
+                // so the second click of a double-click there would answer it unseen. A click on its first
+                // button that soon after it appears does nothing.
+                first.Click += delegate
+                {
+                    if (unchecked(Environment.TickCount - shownAt) >= SystemInformation.DoubleClickTime) DialogResult = DialogResult.OK;
+                };
             }
+            else first.DialogResult = DialogResult.OK;
             AcceptButton = first;
             CancelButton = second ?? first;
             // Focus on the first button, as in Windows' message box, never on the tick box, where a Space
-            // out of habit would tick "delete my settings".
-            Shown += delegate { ActiveControl = first; };
+            // out of habit would tick "delete my settings": the buttons come first in the tab order, so
+            // the window opens with it, and it is set again once shown.
+            buttons.TabIndex = 0;
+            if (option != null) option.TabIndex = 1;
+            Shown += delegate { ActiveControl = first; shownAt = Environment.TickCount; };
             page.Controls.Add(buttons, 0, 2);
             page.SetColumnSpan(buttons, 2);
 
@@ -123,12 +139,13 @@ namespace MouseFace
             return base.ProcessCmdKey(ref msg, keyData);
         }
 
-        // A message with OK.
+        // A message with OK, with the sound Windows' box makes.
         internal static void Tell(IWin32Window owner, string caption, string text, bool warning)
         {
             using (MessageForm f = new MessageForm(caption, text, warning ? Kind.Warning : Kind.Information, "OK", null, null))
             {
                 f.ShowInTaskbar = owner == null; // a box of setup's needs no taskbar button of its own
+                (warning ? SystemSounds.Exclamation : SystemSounds.Asterisk).Play();
                 f.ShowDialog(owner);
             }
         }
@@ -140,6 +157,7 @@ namespace MouseFace
             using (MessageForm f = new MessageForm(caption, text, Kind.Question, yes, no, optionText))
             {
                 f.ShowInTaskbar = owner == null;
+                SystemSounds.Question.Play();
                 bool go = f.ShowDialog(owner) == DialogResult.OK;
                 ticked = go && f.Ticked;
                 return go;

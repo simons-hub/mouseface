@@ -29,7 +29,7 @@ Each release lists the file's SHA-256 and carries GitHub's build attestation, wh
 
 ### If Windows blocks it
 
-Smart App Control, which is on by default on some new Windows 11 PCs, runs only apps that Microsoft already knows or that are code-signed, and it has no **Run anyway**. MouseFace isn't signed yet, so on those PCs Windows blocks the download, or setup says Windows stopped MouseFace from starting. Building it yourself doesn't get round it, as the program it builds isn't signed either.
+Smart App Control, which is on by default on some new Windows 11 PCs, runs only apps that Microsoft already knows or that are code-signed, and it has no **Run anyway**. MouseFace isn't signed yet, so on those PCs Windows won't open the download, or setup says Windows' Smart App Control stopped MouseFace from starting. Building it yourself doesn't get round it, as the program it builds isn't signed either.
 
 To check, open Windows Security > App & browser control > Smart App Control settings. To use MouseFace on that PC, turn Smart App Control off, then run setup again. That lowers the PC's protection against unknown apps. On some PCs it can't be turned back on without resetting Windows; where it can, expect it to block MouseFace again.
 

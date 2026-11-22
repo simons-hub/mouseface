@@ -57,6 +57,29 @@ namespace MouseFace
         // null. note: what to add about an install that worked but couldn't be listed in Installed apps, or null.
         internal static string Install(string self, out string note)
         {
+            string said = null;
+            string problem = OneAtATime(delegate { return InstallNow(self, out said); });
+            note = said;
+            return problem;
+        }
+
+        // One setup at a time in this sign-in: two at once (setup opened twice, say) would each take the
+        // other's new copy for one that failed. Runs step and returns what it does, or says to wait.
+        internal static string OneAtATime(Func<string> step)
+        {
+            using (Mutex one = new Mutex(false, @"Local\" + App.Name + ".setup"))
+            {
+                try { if (!one.WaitOne(0)) return Busy; }
+                catch (AbandonedMutexException) { } // a setup that ended without letting go: this one has it now
+                try { return step(); }
+                finally { one.ReleaseMutex(); }
+            }
+        }
+
+        internal const string Busy = "Another " + App.Name + " setup is running. Wait for it to finish, then try again.";
+
+        static string InstallNow(string self, out string note)
+        {
             note = null;
             if (!Path.IsPathRooted(Dir)) return NoFolder + " so " + App.Name + " was not installed. Nothing was changed.";
             string installed = InstalledVersion();
@@ -112,8 +135,9 @@ namespace MouseFace
                 if (unlisted != null)
                 {
                     // It works; only the Installed apps entry is missing, which the person needs to know.
+                    // Why, in Windows' words about a registry key, is for the log.
                     Log.Write(unlisted);
-                    note = UnlistedNote(unlisted);
+                    note = UnlistedNote;
                 }
                 return null;
             }
@@ -123,21 +147,17 @@ namespace MouseFace
                 // One rename over the new copy, tried for a moment while something (antivirus, say) still
                 // has it open.
                 if (keeping && File.Exists(kept)) { try { Move(kept, exe); back = true; } catch (Exception) { } }
-                // A first install has no copy of its own to start again: the one in place is the new one,
-                // which just failed.
-                // Only a copy that was there and is back: never the new one, which just failed.
+                // Started again only if it was running and is the copy that was there, back or never moved:
+                // never the new one, which just failed, so never after a first install.
                 if (wasRunning && !first && (!keeping || back) && File.Exists(exe)) { try { using (Start(exe, dir)) { } } catch (Exception) { } }
                 string left = PutBack(dir, first, hadDir, links, before);
                 string stranded = keeping && !back && File.Exists(kept) ? kept : null;
-                return Problem(ex, SmartAppControlOn(), Outcome(first, back, IsBlock(ex), left, stranded));
+                return Problem(ex, SmartAppControlOn(), Outcome(first, keeping, back, IsBlock(ex), left, stranded));
             }
         }
 
         // What setup adds to "installed successfully" when Installed apps wouldn't list it.
-        internal static string UnlistedNote(string unlisted)
-        {
-            return Sentence(unlisted) + " To uninstall it later, run this setup again and choose Uninstall.";
-        }
+        internal const string UnlistedNote = "It couldn't be listed in Installed apps, so to uninstall it later, run this setup again and choose Uninstall.";
 
         // path, or path1, path2 and so on: the first name no file has.
         internal static string FreeName(string path)
@@ -146,13 +166,29 @@ namespace MouseFace
             for (int n = 1; ; n++) if (!File.Exists(path + n)) return path + n;
         }
 
-        // Deletes every copy an update set aside (MouseFace.exe.old, .old1 and so on), as far as it can.
+        // The copies an update set aside beside exe (MouseFace.exe.old, .old1 and so on), by exact name:
+        // never a file of yours that only starts the same, like MouseFace.exe.old-backup.
+        internal static List<string> KeptCopies(string exe)
+        {
+            List<string> found = new List<string>();
+            string kept = Path.GetFileName(exe) + Kept;
+            foreach (string file in Directory.GetFiles(Path.GetDirectoryName(exe), kept + "*"))
+            {
+                string name = Path.GetFileName(file);
+                bool digits = name.StartsWith(kept, StringComparison.OrdinalIgnoreCase);
+                for (int i = kept.Length; digits && i < name.Length; i++) digits = name[i] >= '0' && name[i] <= '9';
+                if (digits) found.Add(file);
+            }
+            return found;
+        }
+
+        // Deletes every copy an update set aside, as far as it can, read-only ones too.
         internal static void DeleteKept(string exe)
         {
             try
             {
-                foreach (string file in Directory.GetFiles(Path.GetDirectoryName(exe), Path.GetFileName(exe) + Kept + "*"))
-                    try { File.Delete(file); } catch (Exception) { } // the next install or uninstall tries again
+                foreach (string file in KeptCopies(exe))
+                    try { File.SetAttributes(file, FileAttributes.Normal); File.Delete(file); } catch (Exception) { } // the next install or uninstall tries again
             }
             catch (Exception) { }
         }
@@ -181,6 +217,13 @@ namespace MouseFace
                 try { Delete(exe); }
                 catch (Exception) { left.Add(exe); }
             }
+            // The file the new copy is written to first, if something (antivirus, say) had it open when
+            // Place tidied it away.
+            if (File.Exists(exe + Fresh))
+            {
+                try { Delete(exe + Fresh); }
+                catch (Exception) { left.Add(exe + Fresh); }
+            }
             for (int i = 0; i < links.Length; i++)
             {
                 if (links[i] == null || ReferenceEquals(before[i], Unreadable)) continue;
@@ -195,26 +238,32 @@ namespace MouseFace
             return left.Count == 0 ? null : string.Join(", ", left.ToArray());
         }
 
-        // What a failed install left, as setup says it. left: what could not be deleted, or null.
-        // stranded: where the copy that was there is, when it could not be put back; or null.
-        internal static string Outcome(bool first, bool back, bool blocked, string left, string stranded)
+        // What a failed install left, as setup says it. moved: the copy that was there was set aside, and
+        // back: put back again. left: what could not be deleted, or null. stranded: where the copy that
+        // was there is, when it could not be put back; or null.
+        internal static string Outcome(bool first, bool moved, bool back, bool blocked, string left, string stranded)
         {
             List<string> parts = new List<string>();
-            if (stranded != null) parts.Add("The copy that was there couldn't be put back; it is saved as " + stranded + ".");
-            if (back)
+            if (stranded != null)
             {
-                parts.Add("The copy that was there is back in place.");
+                // The new copy is where it was, and the shortcuts start it.
+                parts.Add("The copy that was there couldn't be put back; it is saved as " + stranded + ".");
+                parts.Add("If the new copy doesn't start when you sign in, run this again and choose Uninstall to remove it.");
+            }
+            else if (back || (!first && !moved))
+            {
+                parts.Add(back ? "The copy that was there is back in place." : "The copy that was there is still in place.");
                 // Windows' rule is likely to stop that copy too (as with a first install that 1.0.0 left
                 // behind when Windows blocked it).
                 if (blocked) parts.Add("If Windows blocks that one too, run this again and choose Uninstall to remove it.");
             }
             else if (first && left == null) parts.Add("Nothing was installed.");
-            if (left != null) parts.Add("Delete what it left by hand: " + left + ".");
+            if (left != null) parts.Add("Setup couldn't delete everything it added, so delete by hand: " + left + ".");
             return parts.Count == 0 ? null : string.Join(" ", parts.ToArray());
         }
 
         // Ends Windows' words (or ours) with one full stop: .NET drops the one Windows has.
-        static string Sentence(string text) { return text.Trim().TrimEnd('.') + "."; }
+        internal static string Sentence(string text) { return text.Trim().TrimEnd('.') + "."; }
 
         static bool IsBlock(Exception ex)
         {
@@ -281,6 +330,7 @@ namespace MouseFace
         }
 
         internal const string Kept = ".old"; // the copy an update replaces, until the new one runs
+        internal const string Fresh = ".new"; // the new copy, written here first, then renamed over the program
 
         // A true move (rename), never a copy, tried for a moment while a program lets go of the file.
         static void Move(string from, string to)
@@ -308,6 +358,11 @@ namespace MouseFace
         // apps runs the installed copy itself to do this.
         internal static string Uninstall(string self, bool deleteSettings)
         {
+            return OneAtATime(delegate { return UninstallNow(self, deleteSettings); });
+        }
+
+        static string UninstallNow(string self, bool deleteSettings)
+        {
             if (!Path.IsPathRooted(Dir)) return NoFolder + " so there is no " + App.Name + " to uninstall.";
             bool wasRunning;
             if (!QuitRunning(out wasRunning)) return "The running " + App.Name + " did not close. Quit it from its tray icon, then try again.";
@@ -318,18 +373,18 @@ namespace MouseFace
                 // Nothing else has changed, so it can be run again; meanwhile the copy that was running
                 // runs again, rather than leave the mouse plain.
                 try { if (wasRunning && File.Exists(Exe)) using (Start()) { } } catch (Exception) { }
-                return "Could not uninstall: " + ex.Message;
+                return "Could not uninstall: " + Sentence(ex.Message);
             }
             // The program is gone, so its entry goes too, whatever else is left.
             List<string> problems = new List<string>();
-            if (left != null) problems.Add("could not delete " + left + " (delete it by hand)");
             try { Unregister(); }
-            catch (Exception ex) { problems.Add("could not remove its entry from Installed apps (" + ex.Message + ")"); }
+            catch (Exception ex) { problems.Add("couldn't remove its entry from Installed apps (" + ex.Message.Trim().TrimEnd('.') + ")"); }
             if (deleteSettings)
             {
                 string stuck = DeleteData(Dir);
-                if (stuck != null) problems.Add("could not delete " + stuck + " (delete it by hand)");
+                if (stuck != null) left = left == null ? stuck : left + ", " + stuck;
             }
+            if (left != null) problems.Add("couldn't delete everything, so delete by hand: " + left);
             return problems.Count == 0 ? null : App.Name + " is uninstalled, but " + string.Join(", and ", problems.ToArray()) + ".";
         }
 
@@ -349,10 +404,13 @@ namespace MouseFace
                 // This process may be working in that folder (Installed apps starts it there), which would
                 // keep the folder itself from going.
                 try { Environment.CurrentDirectory = Path.GetTempPath(); } catch (Exception) { }
+                // By exact name: never a file of yours that only starts the same, like MouseFace.exe.bak.
+                string exe = Path.Combine(dir, App.Name + ".exe");
                 List<string> files = new List<string>();
                 foreach (string name in new string[] { "settings.ini", "settings.ini.tmp", "brightness.txt", App.Name + ".log", App.Name + ".log.old" })
                     files.Add(Path.Combine(dir, name));
-                files.AddRange(Directory.GetFiles(dir, App.Name + ".exe*")); // .new, .old, .uninstalled
+                files.AddRange(new string[] { exe, exe + Fresh, exe + Aside });
+                files.AddRange(KeptCopies(exe));
                 List<string> left = new List<string>();
                 foreach (string file in files)
                 {
@@ -360,7 +418,9 @@ namespace MouseFace
                     try { File.SetAttributes(file, FileAttributes.Normal); File.Delete(file); }
                     catch (Exception) { if (!file.EndsWith(Aside, StringComparison.OrdinalIgnoreCase)) left.Add(file); }
                 }
-                try { Directory.Delete(dir); } catch (Exception) { } // only once empty
+                // Then the folder, once it is empty. One that is a link to another folder (a junction) is
+                // yours, and goes only when the folder it leads to is empty too.
+                try { if (Directory.GetFileSystemEntries(dir).Length == 0) Directory.Delete(dir); } catch (Exception) { }
                 return left.Count == 0 ? null : string.Join(", ", left.ToArray());
             }
             catch (Exception) { return dir; } // a folder that can't be read (a link to nowhere): left as it is
@@ -421,7 +481,7 @@ namespace MouseFace
                 // sure?" at every sign-in; the rename replaces the old file whole, any mark it had with it.
                 // Until then the old program stays as it was, so a write that fails (a full disk, or
                 // antivirus taking the new file) leaves it working.
-                string fresh = exe + ".new";
+                string fresh = exe + Fresh;
                 try
                 {
                     File.WriteAllBytes(fresh, File.ReadAllBytes(self));
@@ -518,27 +578,31 @@ namespace MouseFace
             return false;
         }
 
-        // A .lnk through the shell's own scripting object, as Windows' setup tools make them.
-        static void Shortcut(string path, string target, string workingDir)
+        // A .lnk through the shell's own IShellLinkW, in Unicode. (WScript.Shell, which 1.0.0 used, turns
+        // every path into the PC's older code page first, so it could not save the shortcut of a user whose
+        // name has a letter outside that, like a Polish name on a PC set to English.) install.ps1 makes its
+        // shortcuts with this too. Fails with the shortcut's path and Windows' own words.
+        internal static void Shortcut(string path, string target, string workingDir)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path));
-            Type type = Type.GetTypeFromProgID("WScript.Shell");
-            object shell = Activator.CreateInstance(type);
-            object link = null;
+            Native.IShellLinkW link = (Native.IShellLinkW)new Native.ShellLink();
             try
             {
-                link = type.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { path });
-                Type lt = link.GetType();
-                lt.InvokeMember("TargetPath", BindingFlags.SetProperty, null, link, new object[] { target });
-                lt.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, link, new object[] { workingDir });
-                lt.InvokeMember("Description", BindingFlags.SetProperty, null, link, new object[] { App.Name + ": mouse button remapper and screen dimmer" });
-                lt.InvokeMember("Save", BindingFlags.InvokeMethod, null, link, null);
+                link.SetPath(target);
+                link.SetWorkingDirectory(workingDir);
+                link.SetDescription(App.Name + ": mouse button remapper and screen dimmer");
+                ((System.Runtime.InteropServices.ComTypes.IPersistFile)link).Save(path, true);
             }
-            finally
-            {
-                if (link != null) Marshal.FinalReleaseComObject(link);
-                Marshal.FinalReleaseComObject(shell);
-            }
+            catch (Exception ex) { throw new IOException("Windows couldn't save the shortcut " + path + ". " + WindowsWords(ex), ex); }
+            finally { Marshal.FinalReleaseComObject(link); }
+        }
+
+        // An error in Windows' own words: .NET ends a COM call's with "(Exception from HRESULT: 0x80070005
+        // (E_ACCESSDENIED))", which says nothing to a person.
+        static string WindowsWords(Exception ex)
+        {
+            uint code = unchecked((uint)ex.HResult);
+            return (code & 0xFFFF0000u) == 0x80070000u ? new Win32Exception((int)(code & 0xFFFFu)).Message : ex.Message;
         }
     }
 
@@ -580,7 +644,7 @@ namespace MouseFace
             {
                 Label body = new Label();
                 body.AutoSize = true;
-                body.MaximumSize = Ui.Sz(400, 0);
+                body.MaximumSize = Ui.Sz(460, 0); // the update line on one line, not "it." alone on a second
                 body.Text = newerInstalled ? "This setup is the older version " + App.Version + ". To use it instead, uninstall " + installed
                         + " first (you can keep your settings), then run this again."
                     : installed == App.Version ? "You can reinstall it or uninstall it."

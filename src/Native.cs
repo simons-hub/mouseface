@@ -116,6 +116,32 @@ namespace MouseFace
         internal const int SIID_HELP = 23, SIID_WARNING = 78, SIID_INFO = 79;
         [DllImport("shell32.dll", CharSet = CharSet.Unicode)] internal static extern int SHGetStockIconInfo(int siid, uint flags, ref SHSTOCKICONINFO info);
         [DllImport("shell32.dll", CharSet = CharSet.Unicode)] internal static extern int SHDefExtractIcon(string file, int index, uint flags, out IntPtr large, out IntPtr small, uint sizes);
+        // A shortcut (.lnk), through the shell's own object, in Unicode: any letter a path can have.
+        [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+        internal class ShellLink { }
+        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("000214F9-0000-0000-C000-000000000046")]
+        internal interface IShellLinkW
+        {
+            // All of them, in Windows' order, though only some are used: COM finds each by its place.
+            void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder file, int length, IntPtr findData, uint flags);
+            void GetIDList(out IntPtr idList);
+            void SetIDList(IntPtr idList);
+            void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int length);
+            void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string text);
+            void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder dir, int length);
+            void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string dir);
+            void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder args, int length);
+            void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string args);
+            void GetHotkey(out ushort hotkey);
+            void SetHotkey(ushort hotkey);
+            void GetShowCmd(out int show);
+            void SetShowCmd(int show);
+            void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder file, int length, out int index);
+            void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string file, int index);
+            void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+            void Resolve(IntPtr hwnd, uint flags);
+            void SetPath([MarshalAs(UnmanagedType.LPWStr)] string file);
+        }
         [DllImport("user32.dll", SetLastError = true)] internal static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
         [DllImport("user32.dll")] internal static extern bool CloseDesktop(IntPtr desktop);
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern bool GetUserObjectInformation(IntPtr obj, int index, StringBuilder info, uint length, out uint needed);

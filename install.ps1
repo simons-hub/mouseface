@@ -18,8 +18,8 @@
   -Quiet     never show a message box (for scripts and AI agents); problems go to the output.
   -BuildDir  where to build (default: a temporary folder).
 
-  Your settings.ini, log and saved brightness live in %LOCALAPPDATA%\MouseFace and are kept on
-  uninstall.
+  Your settings.ini, log and saved brightness live in %LOCALAPPDATA%\MouseFace and are kept by
+  -Uninstall.
 #>
 param(
     [switch]$Test,
@@ -52,6 +52,9 @@ $uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppN
 # An uninstall from Installed apps renames the running program here when it can't move it to the
 # temp folder (Installer.MoveAside).
 $asideExe = "$appExe.uninstalled"
+# The copies an update set aside (MouseFace.exe.old, .old1 and so on), by exact name, as setup finds
+# them (Installer.KeptCopies): never a file of yours that only starts the same.
+function Get-Kept { Get-ChildItem -LiteralPath $appDir -Filter "$AppName.exe.old*" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "^$AppName\.exe\.old[0-9]*$" } }
 
 # The same text as a message box, for someone who double-clicked install.cmd. Where there is no
 # desktop to show it on, the printed text is all there is.
@@ -162,7 +165,7 @@ function Stop-Running {
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $uacOn = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA -ErrorAction SilentlyContinue).EnableLUA -ne 0
 if (-not $UnitOnly -and $uacOn -and $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    $text = "This window was opened with Run as administrator, which $AppName doesn't need. Run this again from a normal window."
+    $text = "This window was opened with Run as administrator, and $AppName won't run that way. Run this again from a normal window."
     Write-Host $text
     if (-not $Quiet) { Show-Box $text }
     exit 1
@@ -171,7 +174,7 @@ if (-not $UnitOnly -and $uacOn -and $principal.IsInRole([Security.Principal.Wind
 if ($Uninstall) {
     $was = [bool]((Get-Running) -or (Test-Path -LiteralPath $appExe) -or (Test-Path -LiteralPath $uninstallKey))
     Stop-Running
-    $leftovers = @(Get-ChildItem -LiteralPath $appDir -Filter "$AppName.exe.old*" -ErrorAction SilentlyContinue | ForEach-Object FullName)
+    $leftovers = @(Get-Kept | ForEach-Object FullName)
     foreach ($path in @($appExe, $asideExe, $startupLink, $menuLink) + $leftovers) {
         if ($path -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Force; $was = $true }
     }
@@ -258,6 +261,7 @@ if ($Test) {
     return
 }
 
+$hadDir = Test-Path -LiteralPath $appDir
 New-Item -ItemType Directory -Force -Path $appDir | Out-Null
 $firstRun = -not (Test-Path -LiteralPath (Join-Path $appDir 'settings.ini'))
 # The copy in place is kept aside until the new one has started, and put back if anything fails.
@@ -287,20 +291,21 @@ try {
     }
     if (-not $Trial) {
         # One shortcut starts it at sign-in; the same one in the Start menu turns it back on by hand.
-        $shell = New-Object -ComObject WScript.Shell
+        # Made by the program's own code (Installer.Shortcut), which takes any letter a user name can
+        # have; WScript.Shell can't. Loaded from its bytes, so the built file isn't held open.
+        $program = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($built.App))
+        $method = $program.GetType("$AppName.Installer").GetMethod('Shortcut', [Reflection.BindingFlags]'NonPublic, Static')
+        $shortcut = [Delegate]::CreateDelegate([Action[string, string, string]], $method)
         foreach ($path in @($startupLink, $menuLink)) {
-            $lnk = $shell.CreateShortcut($path)
-            $lnk.TargetPath = $appExe
-            $lnk.WorkingDirectory = $appDir
-            $lnk.Description = "$AppName`: mouse button remapper and screen dimmer"
-            $lnk.Save()
+            # Its own words, not PowerShell's "Exception calling Invoke" around them.
+            try { $shortcut.Invoke($path, $appExe, $appDir) } catch { throw $_.Exception.InnerException }
         }
     }
     # The new copy runs, so no copy set aside, now or by an earlier run, is needed.
-    Get-ChildItem -LiteralPath $appDir -Filter "$AppName.exe.old*" | Remove-Item -ErrorAction SilentlyContinue
+    Get-Kept | Remove-Item -Force -ErrorAction SilentlyContinue
 } catch {
     $failure = $_
-    Remove-Item -LiteralPath "$appExe.new" -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath "$appExe.new" -Force -ErrorAction SilentlyContinue
     if (-not $Trial) {
         foreach ($path in @($startupLink, $menuLink)) {
             if ($path -and -not $hadLink[$path] -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
@@ -310,16 +315,21 @@ try {
         try {
             Stop-Running # the new copy, if it got as far as starting
             Move-Item -LiteralPath $kept -Destination $appExe -Force
-            Write-Host "The $AppName you had is back in place."
-        } catch { $putBackFailed = $true; Write-Warning "Could not put back the $AppName you had ($($_.Exception.Message)); it is in $kept." }
+            Write-Host "The copy that was there is back in place."
+        } catch { $putBackFailed = $true; Write-Warning "The copy that was there couldn't be put back ($($_.Exception.Message)); it is saved as $kept." }
     } elseif ($placed -and -not $hadExe) {
         try {
             # The new copy, if it got as far as starting (one Windows blocked never did, and can't be asked to quit).
             if (Get-Running | Where-Object { $_.Path -eq $appExe }) { Stop-Running }
             Remove-Item -LiteralPath $appExe -Force
-            Write-Host "Nothing was installed."
         } catch { Write-Warning "Could not remove the $AppName this left in $appExe ($($_.Exception.Message)); delete it by hand." }
     }
+    # A folder this run made goes again if nothing is in it (settings.ini or a log the new copy wrote keep it).
+    if (-not $hadDir -and -not (Get-ChildItem -LiteralPath $appDir -Force -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $appDir -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath "$appExe.new") { Write-Warning "Could not remove $appExe.new, which this left; delete it by hand." }
+    elseif (-not $hadExe -and -not (Test-Path -LiteralPath $appExe)) { Write-Host "Nothing was installed." }
     Restart-Previous
     throw $failure
 }
