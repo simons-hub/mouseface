@@ -53,9 +53,12 @@ namespace MouseFace
                 + App.Version + " instead, uninstall " + installed + " first (you can keep your settings), then run this again.";
         }
 
-        // Installs (or replaces) the program and its two shortcuts, then starts it. Returns why not, or null.
-        internal static string Install(string self)
+        // Installs (or replaces) the program and its two shortcuts, then starts it. Returns why not, or
+        // null. note: what to add about an install that worked but couldn't be listed in Installed apps, or null.
+        internal static string Install(string self, out string note)
         {
+            note = null;
+            if (!Path.IsPathRooted(Dir)) return NoFolder + " so " + App.Name + " was not installed. Nothing was changed.";
             string installed = InstalledVersion();
             if (Newer(installed, App.Version)) return DowngradeProblem(installed);
             string conflict = Conflicts.Running();
@@ -69,13 +72,17 @@ namespace MouseFace
                     + " was not installed. Nothing was changed.";
             bool wasRunning;
             if (!QuitRunning(out wasRunning)) return "The running " + App.Name + " did not close. Quit it from its tray icon, then run this again.";
-            return Install(self, Dir, startup, menu, wasRunning, Register);
+            return Install(self, Dir, startup, menu, wasRunning, Register, out note);
         }
+
+        // Where Windows can't say where this account's app data lives, there is nowhere to put MouseFace.
+        const string NoFolder = "Windows can't say where your account's app data folder is,";
 
         // The install itself, apart from where it happens and how it is listed, so the tests can run it,
         // a failure and all, in a folder of their own. register lists it in Installed apps: why not, or null.
-        internal static string Install(string self, string dir, string startup, string menu, bool wasRunning, Func<string> register)
+        internal static string Install(string self, string dir, string startup, string menu, bool wasRunning, Func<string> register, out string note)
         {
+            note = null;
             string exe = Path.Combine(dir, App.Name + ".exe");
             // What was there before, so an install that fails can put it all back: a first install leaves
             // nothing to start at sign-in, and no program without its Installed apps entry.
@@ -102,10 +109,13 @@ namespace MouseFace
                         throw new InvalidOperationException("the new copy stopped as soon as it started (its log says why: " + Log.FilePath + ")");
                 DeleteKept(exe); // the new copy runs, so no copy set aside, now or before, is needed
                 string unlisted = register();
-                if (unlisted == null) return null;
-                // It works; only the Installed apps entry is missing, so say so rather than "successfully".
-                Log.Write(unlisted);
-                return App.Name + " is installed and running. " + Sentence(unlisted) + " To uninstall it later, run this setup again and choose Uninstall.";
+                if (unlisted != null)
+                {
+                    // It works; only the Installed apps entry is missing, which the person needs to know.
+                    Log.Write(unlisted);
+                    note = UnlistedNote(unlisted);
+                }
+                return null;
             }
             catch (Exception ex)
             {
@@ -115,11 +125,18 @@ namespace MouseFace
                 if (keeping && File.Exists(kept)) { try { Move(kept, exe); back = true; } catch (Exception) { } }
                 // A first install has no copy of its own to start again: the one in place is the new one,
                 // which just failed.
-                if (wasRunning && !first && File.Exists(exe)) { try { using (Start(exe, dir)) { } } catch (Exception) { } }
+                // Only a copy that was there and is back: never the new one, which just failed.
+                if (wasRunning && !first && (!keeping || back) && File.Exists(exe)) { try { using (Start(exe, dir)) { } } catch (Exception) { } }
                 string left = PutBack(dir, first, hadDir, links, before);
                 string stranded = keeping && !back && File.Exists(kept) ? kept : null;
                 return Problem(ex, SmartAppControlOn(), Outcome(first, back, IsBlock(ex), left, stranded));
             }
+        }
+
+        // What setup adds to "installed successfully" when Installed apps wouldn't list it.
+        internal static string UnlistedNote(string unlisted)
+        {
+            return Sentence(unlisted) + " To uninstall it later, run this setup again and choose Uninstall.";
         }
 
         // path, or path1, path2 and so on: the first name no file has.
@@ -291,6 +308,7 @@ namespace MouseFace
         // apps runs the installed copy itself to do this.
         internal static string Uninstall(string self, bool deleteSettings)
         {
+            if (!Path.IsPathRooted(Dir)) return NoFolder + " so there is no " + App.Name + " to uninstall.";
             bool wasRunning;
             if (!QuitRunning(out wasRunning)) return "The running " + App.Name + " did not close. Quit it from its tray icon, then try again.";
             string left;
@@ -580,7 +598,12 @@ namespace MouseFace
             if (!newerInstalled)
             {
                 go = SettingsForm.DialogButton(installed == null ? "Install" : installed == App.Version ? "Reinstall" : "Update");
-                go.Click += delegate { Run(Installer.Install(self), App.Name + " installed successfully."); };
+                go.Click += delegate
+                {
+                    string note;
+                    string problem = Installer.Install(self, out note);
+                    Run(problem, App.Name + " installed successfully." + (note == null ? "" : " " + note));
+                };
                 buttons.Controls.Add(go);
             }
             if (installed != null)

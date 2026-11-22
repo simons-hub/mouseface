@@ -92,6 +92,18 @@ namespace MouseFace
         internal Image IconImage { get { return picture.Image; } } // for the tests
         internal int IconSize { get { return picture.Width; } }
 
+        // A picture box doesn't own its image, so the window lets go of it.
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && picture != null && picture.Image != null)
+            {
+                Image image = picture.Image;
+                picture.Image = null;
+                image.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+
         // Moved to a screen scaled differently: the icon is drawn again at its new size, not stretched.
         protected override void AfterRescale()
         {

@@ -44,8 +44,8 @@ namespace MouseFace
             + "Settings: settings.ini in %LOCALAPPDATA%\\" + App.Name + " (tray menu > Settings).";
         internal const string QuitEventName = @"Local\" + App.Name + ".quit";
 
-        const string NotAsAdmin = App.Name + " didn't start because it was started as administrator (with Run as administrator, or from a window "
-            + "opened that way), which it doesn't need. Start it again the normal way.";
+        const string NotAsAdmin = App.Name + " won't run as administrator. It was started with Run as administrator, or from a window "
+            + "opened that way, so start it again the normal way.";
 
         [STAThread]
         static int Main(string[] args)
@@ -60,10 +60,12 @@ namespace MouseFace
                 else if (args[i] == "--install" || args[i] == "--uninstall")
                 {
                     // For scripts: the result goes to the console and the exit code, never to a message box.
+                    string note = null;
                     string problem = elevated ? NotAsAdmin
-                        : args[i] == "--install" ? Installer.Install(App.ExePath) : Installer.Uninstall(App.ExePath, false);
+                        : args[i] == "--install" ? Installer.Install(App.ExePath, out note) : Installer.Uninstall(App.ExePath, false);
                     Console2.Use();
-                    Console.WriteLine(problem ?? (args[i] == "--install" ? App.Name + " " + App.Version + " installed and started." : App.Name + " uninstalled; settings kept in " + Installer.Dir + "."));
+                    Console.WriteLine(problem ?? (args[i] == "--install" ? App.Name + " " + App.Version + " installed and started." + (note == null ? "" : " " + note)
+                        : App.Name + " uninstalled; settings kept in " + Installer.Dir + "."));
                     return problem == null ? 0 : 1;
                 }
                 else if (args[i] == "--register")

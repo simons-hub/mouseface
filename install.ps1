@@ -229,12 +229,13 @@ if (-not $UnitOnly) {
 # The live test refuses to run beside a running copy, and an install replaces it. When nothing ends
 # up installed (a test run, or any step that fails), the copy that was running is started again.
 $restart = $false
+$putBackFailed = $false # then the copy in place is the new one, which just failed: never restarted
 if (-not ($Test -and $UnitOnly)) {
     $restart = [bool](Get-Running | Where-Object { $_.Path -eq $appExe })
     Stop-Running
 }
 function Restart-Previous {
-    if ($restart -and (Test-Path -LiteralPath $appExe) -and -not (Get-Running | Where-Object { $_.Path -eq $appExe })) {
+    if ($restart -and -not $putBackFailed -and (Test-Path -LiteralPath $appExe) -and -not (Get-Running | Where-Object { $_.Path -eq $appExe })) {
         Start-Process -FilePath $appExe -WorkingDirectory $appDir
         Write-Host "Your $AppName was restarted, as it was."
     }
@@ -310,7 +311,7 @@ try {
             Stop-Running # the new copy, if it got as far as starting
             Move-Item -LiteralPath $kept -Destination $appExe -Force
             Write-Host "The $AppName you had is back in place."
-        } catch { Write-Warning "Could not put back the $AppName you had ($($_.Exception.Message)); it is in $kept." }
+        } catch { $putBackFailed = $true; Write-Warning "Could not put back the $AppName you had ($($_.Exception.Message)); it is in $kept." }
     } elseif ($placed -and -not $hadExe) {
         try {
             # The new copy, if it got as far as starting (one Windows blocked never did, and can't be asked to quit).

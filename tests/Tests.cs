@@ -593,7 +593,8 @@ namespace MouseFace.Tests
                 string s2 = Path.Combine(home, "Startup2", App.Name + ".lnk"), m2 = Path.Combine(home, "Programs2", App.Name + ".lnk");
                 bool e2eListed = false;
                 Func<string> register = delegate { e2eListed = true; return null; };
-                string said = Installer.Install(stand, e2e, s2, m2, false, register);
+                string e2eNote;
+                string said = Installer.Install(stand, e2e, s2, m2, false, register, out e2eNote);
                 Check("end to end: a first install Windows won't start says why, and that nothing was installed",
                     said != null && said.StartsWith("Could not install: ") && said.EndsWith(". Nothing was installed."));
                 Check("  ...and leaves no program, no shortcut, no folder and no Installed apps entry",
@@ -602,14 +603,14 @@ namespace MouseFace.Tests
                 File.WriteAllText(e2eIni, "[Mouse]");
                 Installer.Place(Assembly.GetExecutingAssembly().Location, dir, m2); // a Start menu shortcut there before
                 byte[] m2Before = File.ReadAllBytes(m2);
-                said = Installer.Install(stand, e2e, s2, m2, false, register);
+                said = Installer.Install(stand, e2e, s2, m2, false, register, out e2eNote);
                 Check("  ...after an uninstall that kept settings.ini: keeps it and its folder, removes the program and the new shortcut",
                     File.Exists(e2eIni) && !File.Exists(e2eExe) && !File.Exists(s2) && said.EndsWith(". Nothing was installed."));
                 Check("  ...and gives a shortcut that was there before its old contents back",
                     Convert.ToBase64String(File.ReadAllBytes(m2)) == Convert.ToBase64String(m2Before));
                 File.WriteAllText(e2eExe, "the copy you had");
                 File.WriteAllText(e2eExe + Installer.Kept, "a copy an earlier failed update could not put back");
-                said = Installer.Install(stand, e2e, s2, m2, false, register);
+                said = Installer.Install(stand, e2e, s2, m2, false, register, out e2eNote);
                 Check("end to end: an update Windows won't start puts back the copy that was there, and says so",
                     File.ReadAllText(e2eExe) == "the copy you had" && said.EndsWith(". The copy that was there is back in place."));
                 Check("  ...never writing over a copy an earlier failed update set aside, nor leaving one of its own",
@@ -690,6 +691,9 @@ namespace MouseFace.Tests
                 && !Installer.Blocked(4560) && !Installer.Blocked(4579) && !Installer.Blocked(4583) && !Installer.Blocked(5));
             Check("any other failure keeps Windows' words, ending them with a full stop, then what was left",
                 Installer.Problem(new Win32Exception(5), true, "Nothing was installed.") == "Could not install: Access is denied. Nothing was installed.");
+            Check("an install Installed apps wouldn't list says so, and how to uninstall it later",
+                Installer.UnlistedNote("Could not add MouseFace to Installed apps: Access is denied")
+                == "Could not add MouseFace to Installed apps: Access is denied. To uninstall it later, run this setup again and choose Uninstall.");
             Check("what a failed first install says", Installer.Outcome(true, false, true, null, null) == "Nothing was installed.");
             Check("  ...or what it couldn't delete", Installer.Outcome(true, false, false, @"C:\x\MouseFace.lnk", null) == @"Delete what it left by hand: C:\x\MouseFace.lnk.");
             Check("a failed update says the copy is back", Installer.Outcome(false, true, false, null, null) == "The copy that was there is back in place.");
